@@ -40,6 +40,7 @@ services:
       DJANGO_ALLOWED_HOSTS: klausde.tech
       DJANGO_SECURE_SSL_REDIRECT: "1"
       DJANGO_SECURE_HSTS_SECONDS: "31536000"
+      DJANGO_DB_PATH: /data/db.sqlite3
       RAG_DB_HOST: mariadb
       RAG_DB_PORT: "3306"
       RAG_DB_USER: ${RAG_DB_USER:-wikirag}
@@ -56,6 +57,7 @@ services:
       - "8000"
     volumes:
       - ./data/wikirag:/data/wikirag:ro
+      - backend-data:/data
     networks:
       - internal
     labels:
@@ -72,6 +74,7 @@ services:
       - traefik.http.services.wikipedia-factcheck.loadbalancer.server.port=8000
 
 volumes:
+  backend-data:
   wikirag-db:
   wikirag-ollama:
 
