@@ -35,7 +35,8 @@ async function checkText(text) {
     return;
   }
   const id = result.explanation_id;
-  const explanation = id ? { status: "loading" } : undefined;
+  // startedAt lets the side panel give up on an explanation that never arrives.
+  const explanation = id ? { status: "loading", startedAt: Date.now() } : undefined;
   await chrome.storage.session.set({ job: { status: "done", text, result, explanation } });
   if (id) await updateExplanation(id, await fetchExplanation(id));
 }
