@@ -48,7 +48,7 @@
     if (sentence.status !== "done") return sentence.status === "running" ? "◌ Checking…" : "◌ Pending";
     if (sentence.result?.decision === "SUPPORTED") return "✓ Supported";
     if (sentence.result?.decision === "REFUTED") return "× Refuted";
-    return "Can't be confirmed from wikipedia";
+    return "Can't be confirmed from Wikipedia";
   }
   function sourceLink(source, title) {
     let url;
