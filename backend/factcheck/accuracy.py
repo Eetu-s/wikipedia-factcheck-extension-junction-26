@@ -99,19 +99,19 @@ def statistics(rows):
     latencies = [sample["latency_ms"] for sample in completed if "latency_ms" in sample]
     confidences = [sample["confidence"] for sample in completed if "confidence" in sample]
     metrics = [
-        {"label": "Overall accuracy", "value": percent(tp + tn, attempted),
-         "detail": f"{tp + tn} correct / {attempted} attempted"},
+        {"label": "Accuracy", "value": percent(tp + tn, attempted),
+         "detail": f"{tp + tn} of {attempted} correct"},
         {"label": "Coverage", "value": percent(decided, attempted),
-         "detail": f"{decided} supported or refuted"},
+         "detail": f"Gave a verdict on {decided} of {attempted}"},
         {"label": "Precision", "value": percent(tp, tp + fp), "detail": "TP / (TP + FP)"},
         {"label": "Recall", "value": percent(tp, tp + fn), "detail": "TP / (TP + FN)"},
         {"label": "F1 score", "value": percent(2 * tp, 2 * tp + fp + fn),
          "detail": "2TP / (2TP + FP + FN)"},
         {"label": "Specificity", "value": percent(tn, tn + fp), "detail": "TN / (TN + FP)"},
-        {"label": "Mean confidence", "value": percent(sum(confidences), len(confidences)),
-         "detail": "Fast model's reported confidence"},
-        {"label": "Mean check time", "value": f"{sum(latencies) / len(latencies) / 1000:.2f}s" if latencies else "—",
-         "detail": "Retrieval + fast verdict"},
+        {"label": "Average confidence", "value": percent(sum(confidences), len(confidences)),
+         "detail": "As reported by the model"},
+        {"label": "Average check time", "value": f"{sum(latencies) / len(latencies) / 1000:.2f}s" if latencies else "—",
+         "detail": "Wikipedia search and verdict"},
     ]
     return {**counts, "metrics": metrics, "attempted": attempted, "completed": len(completed),
             "abstentions": sum(sample["decision"] == "NOT ENOUGH INFO" for sample in completed),
