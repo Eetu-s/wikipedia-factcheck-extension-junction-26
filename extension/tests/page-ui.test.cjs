@@ -76,7 +76,7 @@ const assert = require('node:assert/strict');
         sents[2].status='done'; sents[2].result={decision:'NOT ENOUGH INFO',sources:[],check_id:'gray'};
         ui.update(sents,{completed:3,total:3});
       });
-      assert.ok((await live.textContent()).includes("Can't be confirmed from Wikipedia."));
+      assert.ok((await live.textContent()).includes('Uncertain / not fact-checkable.'));
       assert.deepEqual(await page.evaluate(()=>chosen),[],'pending pin and subsequent completion do not auto-analyze');
       await popover.getByRole('button',{name:'Click for deeper analysis'}).click();
       assert.deepEqual(await page.evaluate(()=>chosen),['2'],'completed pending sentence can be explicitly analyzed');

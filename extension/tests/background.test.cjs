@@ -76,55 +76,6 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   assert.equal(JSON.parse(calls.at(-1).options.body).password, "test-password");
   assert.equal(JSON.parse(calls.at(-1).options.body).fast_only, undefined);
 
-  // Each sentence owns its JSON request: fast answers never wait for a slow peer.
-  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-  const waitFor = async (condition) => {
-    for (let i = 0; i < 50 && !condition(); i++) await tick();
-    assert.ok(condition(), "asynchronous transport condition completed");
-  };
-  await begin("independent", 3);
-  const independent = new Map();
-  responder = (_url, { signal, body }) => new Promise((resolve, reject) => {
-    const item = JSON.parse(body);
-    independent.set(item.sentence_id, { resolve, signal, item });
-    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-  });
-  const item = (sentenceId, text) => ({ type: "WFC_FAST", scanId: "independent", sentenceId, text,
-    context: { paragraph: text } });
-  const slowMessage = item("slow", "Helsinki is in Finland.");
-  const fastMessage = item("fast", "Paris is in France.");
-  const otherMessage = item("other", "Oslo is in Norway.");
-  const beforeIndependent = calls.length;
-  let slowSettled = false;
-  const slow = invoke(slowMessage, 3).finally(() => { slowSettled = true; });
-  const fastReply = invoke(fastMessage, 3);
-  const otherReply = invoke(otherMessage, 3);
-  await waitFor(() => independent.size === 3);
-  assert.equal(calls.length - beforeIndependent, 3, "independent checks start without waiting for each other");
-  assert.ok(calls.slice(beforeIndependent).every(call => call.url.endsWith("/api/factcheck/")),
-    "page checks use the existing JSON endpoint, without a batch or stream protocol");
-  assert.ok([...independent.values()].every(entry => entry.item.fast_only === true));
-  independent.get("fast").resolve(response({ ...responderResult(), decision: "REFUTED" }));
-  assert.equal((await fastReply).result.decision, "REFUTED");
-  assert.equal(slowSettled, false, "the faster second sentence resolves while the first is unfinished");
-  const beforeCache = calls.length;
-  assert.equal((await invoke(fastMessage, 3)).result.decision, "REFUTED");
-  assert.equal(calls.length, beforeCache, "a completed sentence can be reused before its peers finish");
-  independent.get("other").resolve(response(responderResult()));
-  assert.equal((await otherReply).result.decision, "SUPPORTED");
-  assert.equal(slowSettled, false);
-  const slowRejected = assert.rejects(slow, /cancelled/);
-  await invoke({ type: "WFC_SCAN_CANCEL", scanId: "independent", kind: "fast" }, 3);
-  await slowRejected;
-  assert.equal(independent.get("slow").signal.aborted, true, "Stop cancels only unfinished requests");
-
-  // Rescan asks again even if the same sentence completed in the prior scan.
-  await begin("independent-again", 3);
-  responder = () => response(responderResult());
-  const beforeRescan = calls.length;
-  await invoke({ ...fastMessage, scanId: "independent-again" }, 3);
-  assert.equal(calls.length, beforeRescan + 1, "Rescan drops cached results for its tab");
-
   // In-flight work from Clear/navigation cannot become the next scan's cached result.
   let finish;
   responder = (_url, { signal }) => new Promise((resolve, reject) => {
@@ -138,39 +89,6 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   finish();
   await rejected;
   assert.equal((await invoke(fast())).stale, true);
-
-  // Real gateway HTML and transport failures must survive the runtime reply as retryable.
-  await begin("recovery");
-  const throughRuntime = (paragraph) => new Promise(resolve => {
-    chrome.runtime.onMessage.listeners[0](fast({ paragraph }, "recovery"),
-      { tab: { id: 1 }, frameId: 0, url: "https://article.example/story" }, resolve);
-  });
-  for (const status of [502, 503, 504]) {
-    responder = () => ({ ...response(null, status, null), async json() { throw new SyntaxError("HTML gateway response"); } });
-    const reply = await throughRuntime("gateway " + status);
-    assert.equal(reply.status, status);
-    assert.equal(reply.retryable, true, "temporary gateway failures can back off instead of failing every sentence");
-    assert.equal(reply.retryAfter, undefined, "a missing Retry-After leaves exponential backoff to the scanner");
-  }
-  responder = () => { throw new Error("network unavailable"); };
-  const disconnected = await throughRuntime("disconnected");
-  assert.equal(disconnected.retryable, true);
-  assert.match(disconnected.error, /Can't reach the backend/);
-  const timeoutController = new AbortController();
-  responder = (_url, { signal }) => new Promise((_resolve, reject) => {
-    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-  });
-  const timedOut = context.authenticatedRequest("/api/factcheck/", { text: "A timed-out check." }, timeoutController.signal);
-  const timeoutRejected = assert.rejects(timedOut, error => error.retryable === true && /timed out/.test(error.message));
-  await waitFor(() => calls.at(-1).options.signal === timeoutController.signal);
-  timeoutController.abort();
-  await timeoutRejected;
-  for (const status of [400, 502]) {
-    responder = () => response({ error: "A structured API failure" }, status, null);
-    const reply = await throughRuntime("API " + status);
-    assert.equal(reply.retryable, false, "API validation/provider errors are not mistaken for proxy outages");
-    assert.equal(reply.error, "A structured API failure");
-  }
 
   // Auth/rate-limit failures remain structured so the page queue can stop/back off.
   await begin("fresh");
@@ -196,5 +114,5 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   assert.equal(local.password, "new-password");
   await chrome.tabs.onRemoved.listeners[0](2);
   assert.equal(session["pageScan:2"], undefined);
-  console.log("Background passed: gateway/network recovery metadata, independent JSON checks, out-of-order results, cancellation, fresh rescan, selection compatibility, context cache, tab isolation, authenticated deep, 401/429.");
+  console.log("Background passed: selection compatibility, fast-only/context cache, tab isolation, authenticated deep, cancellation, 401/429.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

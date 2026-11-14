@@ -162,8 +162,11 @@ class ContextAndAnalysisTests(SimpleTestCase):
         self.assertEqual(evidence, ARTICLES)
         query = search.call_args.args[0]
         self.assertTrue(query.startswith("It was completed in 1889."))
-        self.assertIn(CONTEXT["paragraph"], query)
-        self.assertLess(query.index("paragraph:"), query.index("page_title:"))
+        # Retrieval keeps only what names the subject; the paragraph goes to the model instead.
+        for kept in ("previous", "section_heading", "page_title"):
+            self.assertIn(CONTEXT[kept], query)
+        self.assertNotIn(CONTEXT["paragraph"], query)
+        self.assertNotIn(CONTEXT["next"], query)
         prompt = build_input("It was completed in 1889.", ARTICLES, CONTEXT)
         self.assertIn("TARGET SENTENCE", prompt)
         self.assertIn("PAGE CONTEXT (not evidence)", prompt)
