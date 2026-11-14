@@ -31,6 +31,8 @@ Use the selector or Previous/Next to browse without requesting analysis, then Op
 to analyze the chosen sentence.
 
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
+Its **×** closes the overlay and clears the scan. Navigating or switching away from the
+tab also closes it; leaving the browser window dismisses the sentence popover.
 Three fast requests run concurrently, with visible sentences prioritized and the entire
 extracted article eventually processed. Checks use the saved password with `/api/factcheck/`,
 which bypasses the public API and production proxy rate limits. Upstream model-provider

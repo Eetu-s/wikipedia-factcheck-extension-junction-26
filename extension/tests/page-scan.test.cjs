@@ -122,7 +122,7 @@ const { chromium } = require("playwright-core");
     assert.equal(await page.evaluate(() => mock.requests.length), stoppedRequests, "Retry waits for Stop cancellation acknowledgment");
     await page.evaluate(() => { mock.holdCancel = false; mock.releaseCancel({}); return mock.retryPromise; });
     await page.waitForFunction(n => mock.requests.length > n, stoppedRequests);
-    await page.evaluate(() => WikiFactPageScan.clear());
+    await page.getByRole("button", { name: "Close page fact-check overlay", exact: true }).click();
     await finishBatch();
     assert.equal(await page.locator("[data-wfc-ui]").count(), 0);
     assert.equal(await page.evaluate(() => CSS.highlights.has("wfc-supported")), false);
@@ -161,7 +161,11 @@ const { chromium } = require("playwright-core");
     });
     await page.evaluate(() => WikiFactPageScan.clear());
     // Strict article CSP must not suppress the guide or the Custom Highlight stylesheet.
-    await page.setContent('<html lang="en"><head><meta http-equiv="Content-Security-Policy" content="style-src \'none\'"><title>CSP article</title></head><body><article><h1>Paris landmarks</h1><p>The Eiffel Tower stands in Paris. It was completed in 1889.</p></article></body></html>');
+    // Keep the document's event listeners: document.open() used by setContent clears them.
+    await page.evaluate(() => {
+      document.head.innerHTML = '<meta http-equiv="Content-Security-Policy" content="style-src \'none\'"><title>CSP article</title>';
+      document.body.innerHTML = '<article><h1>Paris landmarks</h1><p>The Eiffel Tower stands in Paris. It was completed in 1889.</p></article>';
+    });
     await page.evaluate(() => WikiFactPageScan.start());
     await page.waitForFunction(() => CSS.highlights.get("wfc-supported")?.size > 0);
     assert.equal(await page.evaluate(() => document.adoptedStyleSheets.some(sheet =>
@@ -169,7 +173,37 @@ const { chromium } = require("playwright-core");
     assert.equal(await page.locator('[data-wfc-ui] .guide').evaluate(node => getComputedStyle(node).borderTopWidth), "2px");
     await page.getByRole("button", { name: "Open result", exact: true }).click();
     if (process.env.WFC_SCREENSHOT) await page.screenshot({ path: process.env.WFC_SCREENSHOT });
-    await page.evaluate(() => WikiFactPageScan.clear());
-    console.log("Page scans passed: bounded/visible queue, all loaded text, progressive verdicts, hover/click deep, explicit rescan, stale cancellation, retry/backoff.");
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    assert.equal(await page.locator('[data-wfc-ui] .popover').isVisible(), false, "Leaving the window dismisses pinned results");
+    await page.getByRole("button", { name: "Open result", exact: true }).click();
+    await page.mouse.move(-5, -5);
+    await page.locator('[data-wfc-ui] .popover').waitFor({ state: "hidden" });
+
+    await page.evaluate(() => { location.hash = "next-article"; });
+    await page.locator('[data-wfc-ui]').waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => CSS.highlights.has("wfc-supported")), false, "Navigation clears old highlights");
+    await page.evaluate(() => WikiFactPageScan.start());
+    await page.waitForFunction(() => CSS.highlights.get("wfc-supported")?.size > 0);
+    // History API navigation may not dispatch popstate; the URL watcher still closes it.
+    await page.evaluate(() => history.pushState({}, "", "#another-article"));
+    await page.locator('[data-wfc-ui]').waitFor({ state: "detached" });
+    await page.evaluate(() => WikiFactPageScan.start());
+    await page.waitForFunction(() => CSS.highlights.get("wfc-supported")?.size > 0);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, value: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    assert.equal(await page.locator('[data-wfc-ui]').count(), 0, "Switching away from the tab closes the whole overlay");
+    assert.equal(await page.evaluate(() => CSS.highlights.has("wfc-supported")), false);
+    await page.evaluate(() => {
+      delete document.hidden;
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    assert.equal(await page.locator('[data-wfc-ui]').count(), 0, "Returning to the tab does not reopen a dismissed overlay");
+    await page.evaluate(() => WikiFactPageScan.start());
+    await page.waitForFunction(() => CSS.highlights.get("wfc-supported")?.size > 0);
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    assert.equal(await page.locator('[data-wfc-ui]').count(), 0, "Leaving the document clears the overlay before browser back-cache");
+    console.log("Page scans passed: bounded/visible queue, all loaded text, progressive verdicts, hover/click deep, explicit rescan, stale cancellation, retry/backoff, close and page-leave cleanup.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

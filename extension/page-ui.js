@@ -13,7 +13,7 @@
     p,blockquote,li { overflow-wrap:anywhere; } .muted { color:var(--muted); font-size:12px; } .error { color:var(--red); }
     .guide,.popover { position:fixed; pointer-events:auto; background:var(--plate); border:2px solid var(--ink); box-shadow:6px 6px 0 var(--paper-3); padding:12px; z-index:1; }
     .guide { width:310px; max-width:calc(100vw - 24px); right:12px; bottom:12px; display:grid; gap:8px; max-height:calc(100dvh - 24px); overflow:auto; }
-    .guide-head,.row { display:flex; align-items:center; justify-content:space-between; gap:8px; } .guide-head button { font-size:12px; min-height:26px; padding:2px 7px; }
+    .guide-head,.row { display:flex; align-items:center; justify-content:space-between; gap:8px; } .guide-head h2 { min-width:0; } .guide-actions { display:flex; flex-shrink:0; gap:6px; } .guide-head button { font-size:12px; min-height:26px; padding:2px 7px; }
     .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--muted); } .legend span { display:inline-flex; gap:5px; align-items:center; } .dot { width:9px; height:9px; display:inline-block; background:var(--muted); } .green { background:var(--green); } .red { background:var(--red); }
     progress { width:100%; height:6px; appearance:none; border:0; background:var(--paper-3); accent-color:var(--ink); } progress::-webkit-progress-bar { background:var(--paper-3); } progress::-webkit-progress-value { background:var(--ink); }
     .controls { display:flex; flex-wrap:wrap; gap:6px; } .controls button { font-size:12px; }
@@ -118,7 +118,15 @@
       else clamp();
     });
     toggle.setAttribute("aria-expanded", "true");
-    guideHead.append(toggle);
+    const closeGuide = button("×", () => {
+      if (callbacks.onClear) callbacks.onClear();
+      else destroy();
+    }, "quiet close");
+    closeGuide.setAttribute("aria-label", "Close page fact-check overlay");
+    closeGuide.title = "Close page fact-check overlay";
+    const guideActions = element("div", "guide-actions");
+    guideActions.append(toggle, closeGuide);
+    guideHead.append(guideActions);
     const progressText = element("p", "muted", "Preparing article…");
     const progress = element("progress");
     progress.setAttribute("aria-label", "Fast check progress");
