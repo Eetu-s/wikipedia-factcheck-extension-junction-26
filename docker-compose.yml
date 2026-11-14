@@ -1,5 +1,5 @@
 # Django backend, plus MariaDB (vector search) and Ollama (embeddings) for the RAG search.
-#   docker compose up --build -d --wait
+#   docker compose up --build -d --wait     # website: http://localhost:8080, API: http://localhost:8000
 #   docker compose exec ollama ollama pull bge-m3
 services:
   backend:
@@ -37,6 +37,18 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # The website (web/): nginx serves the static files and forwards /api/ to the backend,
+  # so the page and the API share one origin.
+  frontend:
+    build: ./web
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"                 # http://localhost:8080
+    volumes:
+      # Live-reload the site during development.
+      - ./web/public:/usr/share/nginx/html:ro
 
   mariadb:
     image: mariadb:lts            # vector search needs MariaDB 11.7 or later

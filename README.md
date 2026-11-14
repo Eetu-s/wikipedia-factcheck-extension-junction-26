@@ -7,6 +7,7 @@ Fact checking for Wikipedia articles.
 | `backend/`   | Django API                                   |
 | `rag/`       | Retrieval layer (ingestion + vector search)  |
 | `extension/` | Browser extension frontend                   |
+| `web/`       | Website frontend (nginx, no login)           |
 | `data/`      | Local RAG data and indexes (git-ignored)     |
 
 See [AGENTS.md](AGENTS.md) for setup and contribution conventions.
