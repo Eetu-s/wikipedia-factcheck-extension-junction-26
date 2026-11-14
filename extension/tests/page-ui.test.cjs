@@ -142,7 +142,8 @@ const assert = require('node:assert/strict');
       assert.ok(pop.x + pop.width <= guide.x || pop.x >= guide.x + guide.width || pop.y + pop.height <= guide.y || pop.y >= guide.y + guide.height, 'pinned popover leaves guide reachable');
       await page.keyboard.press('Escape');
     }
-    await page.evaluate(()=>ui.destroy());
+    await host.getByRole('button',{name:'Close page fact-check overlay',exact:true}).focus();
+    await page.keyboard.press('Enter');
     assert.equal(await host.count(),0);
     console.log('PASS overlay: Shadow DOM isolation, viewport clamp, hover transfer, all verdict deep actions, keyboard, pending/completed deep, Unicode correction offsets, safe links, cleanup');
   }finally{await browser.close();}

@@ -89,6 +89,16 @@
     await send("WFC_SCAN_CANCEL", {}, old).catch(() => {});
   }
 
+  function dismissSentence() {
+    cancelAnimationFrame(hoverFrame);
+    hoverFrame = 0;
+    scan?.ui.hide();
+  }
+
+  function closeOnNavigation() {
+    if (scan && location.href !== scan.url) clear();
+  }
+
   function visible(sentence) {
     const rect = sentence.range.getBoundingClientRect();
     return rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
@@ -295,9 +305,7 @@
       subtree: true, childList: true, characterData: true, attributes: true,
       attributeFilter: ["hidden", "aria-hidden", "style", "class", "contenteditable", "lang", "content", "datetime", "open"],
     });
-    current.navigationTimer = setInterval(() => {
-      if (location.href !== current.url) invalidate(current, "Navigation detected. Choose Rescan to check this page.");
-    }, 500);
+    current.navigationTimer = setInterval(closeOnNavigation, 500);
     try {
       await send("WFC_SCAN_BEGIN", {}, current);
       if (live(current)) pump(current);
@@ -330,6 +338,13 @@
   }, true);
   window.addEventListener("scroll", () => { if (scan && !scan.stopped) pump(); }, { passive: true });
   window.addEventListener("pagehide", () => { clear(); });
+  window.addEventListener("popstate", closeOnNavigation);
+  window.addEventListener("hashchange", closeOnNavigation);
+  window.addEventListener("blur", dismissSentence);
+  document.addEventListener("pointerout", (event) => {
+    if (!event.relatedTarget && event.pointerType !== "touch") dismissSentence();
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) clear(); });
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "WFC_PAGE_START") { start(); return false; }
   });
