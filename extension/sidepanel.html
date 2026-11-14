@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Wikipedia Fact Check</title>
+  <style>
+    body { font-family: sans-serif; margin: 12px; }
+    pre { white-space: pre-wrap; background: #f3f3f3; padding: 8px; }
+    label { display: block; margin-top: 8px; }
+    input { width: 100%; box-sizing: border-box; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Wikipedia Fact Check</h1>
+
+  <!-- Shown until a password is saved. -->
+  <form id="login" hidden>
+    <h2>Log in</h2>
+    <p id="loginError" class="error"></p>
+    <label>Backend URL <input id="backendUrl" placeholder="http://localhost:8000"></label>
+    <label>Password <input id="password" type="password" required></label>
+    <p><button type="submit">Log in</button></p>
+  </form>
+
+  <!-- Shown once logged in. -->
+  <div id="main" hidden>
+    <div id="result">Select text on a page, right-click, and choose <em>Fact-check selection</em>.</div>
+    <p><button id="logout">Log out</button></p>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
