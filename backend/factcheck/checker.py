@@ -9,7 +9,7 @@ from enum import StrEnum
 
 import pymysql
 from django.conf import settings
-from wikirag import EmbeddingError, semantic_search
+from wikirag import EmbeddingError, chunk_search, semantic_search
 from wikirag.db import connect
 from wikirag.embedding import embed_many
 
@@ -141,7 +141,12 @@ def search_wikipedia(claim: str) -> list[dict]:
 
 
 def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
-    """search_wikipedia() for several claims: one embedding call and one database connection."""
+    """search_wikipedia() for several claims: one embedding call and one database connection.
+
+    Each claim searches both whole-article vectors (article_vector: History of Finland in
+    fi/sv/en) and paragraph vectors (chunk_vector: English Wikipedia), and the two rankings are
+    fused (see fuse_rankings). Either table may be missing or empty.
+    """
     try:
         vectors = embed_many(claims)
     except EmbeddingError as e:
@@ -150,12 +155,20 @@ def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
         con = connect()
     except pymysql.MySQLError as e:
         raise CheckerError(f"Can't reach the RAG database: {e}") from e
+    searches = [semantic_search, chunk_search]
     try:
         cursor = con.cursor()
-        results = [
-            semantic_search(cursor, claim, limit=RAG_ARTICLES, vector=vector)
-            for claim, vector in zip(claims, vectors)
-        ]
+        results = []
+        for claim, vector in zip(claims, vectors):
+            rankings = []
+            for search in list(searches):
+                try:
+                    rankings.append(search(cursor, claim, limit=RAG_ARTICLES, vector=vector))
+                except pymysql.ProgrammingError as e:
+                    if e.args[0] != NO_SUCH_TABLE:
+                        raise
+                    searches.remove(search)  # Its data isn't loaded; skip it for the rest.
+            results.append(fuse_rankings(rankings, RAG_ARTICLES))
     except pymysql.MySQLError as e:
         raise CheckerError(f"RAG search failed: {e}") from e
     finally:
@@ -172,6 +185,35 @@ def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
          for r in rows]
         for rows in results
     ]
+
+
+NO_SUCH_TABLE = 1146  # MariaDB error: the table doesn't exist (its data isn't loaded).
+
+# Results further than this (cosine distance) are left out. Unrelated articles measured
+# ~0.50-0.55; the right article for a claim ~0.23-0.47. Tune with the accuracy benchmark.
+MAX_DISTANCE = 0.5
+
+
+def fuse_rankings(rankings: list[list[dict]], limit: int) -> list[dict]:
+    """Merge rankings from different searches by rank, not by raw distance.
+
+    Distances aren't comparable across the searches: one vector per whole article lies
+    further from any claim than one per paragraph, so loosely related paragraphs (~0.40) would
+    push out the right article (~0.47). Instead the rankings take turns, the one with the
+    closest result first, skipping results beyond MAX_DISTANCE and articles already taken.
+    """
+    rankings = [[r for r in ranking if r["distance"] <= MAX_DISTANCE] for ranking in rankings]
+    rankings = sorted((r for r in rankings if r), key=lambda ranking: ranking[0]["distance"])
+    seen, result = set(), []
+    for rank in range(max((len(r) for r in rankings), default=0)):
+        for ranking in rankings:
+            if rank < len(ranking):
+                r = ranking[rank]
+                key = (r["lang"], r["page_id"])
+                if key not in seen:
+                    seen.add(key)
+                    result.append(r)
+    return result[:limit]
 
 
 def pick_sources(decision: Decision, articles: list[dict], answers: dict) -> list[str]:
