@@ -3,46 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A stored evaluation of 100 true and 100 false Finnish-history statements using the Wikipedia Fact Check extension's model.">
+  <meta name="description" content="How the Wikipedia Fact Check model did on 100 true and 100 false statements about Finnish history.">
   <title>Accuracy · Wikipedia Fact Check</title>
   <link rel="stylesheet" href="{% url 'accuracy_css' %}">
 </head>
 <body>
 <main>
-  <header><span class="brand">Wikipedia Fact Check</span><span class="eyebrow">ACCURACY REPORT / FINNISH HISTORY</span></header>
+  <header><span class="brand">Wikipedia Fact Check</span><span class="eyebrow">Accuracy test</span></header>
   <section class="hero" aria-labelledby="report-title">
-    <div><p class="eyebrow">100 TRUE + 100 FALSE STATEMENTS</p><h1 id="report-title">Accuracy, measured.</h1><p class="intro">A statement-by-statement record of the extension's fast verdicts, with Wikipedia-backed corrections where the deeper analysis found them.</p></div>
+    <div><p class="eyebrow">100 true and 100 false statements</p><h1 id="report-title">How accurate is it on Finnish history?</h1><p class="intro">We ran the fact checker on 100 true and 100 false statements about Finnish history. Below are the numbers and every verdict it gave. Where it called a statement false, the table also shows the correction it suggested and the Wikipedia articles it got it from.</p></div>
     <div class="run-state">
-      <span class="status">{% if not run %}Not run yet{% elif run.finished_at %}Saved evaluation{% else %}Partial evaluation{% endif %}</span>
-      {% if run %}<span class="meta">{{ run.fast_model }}</span><span class="meta">Updated {{ run.updated_at }}</span>{% else %}<span class="meta">No model results have been generated.</span>{% endif %}
+      <span class="status">{% if not run %}Not run yet{% elif run.finished_at %}Finished run{% else %}Unfinished run{% endif %}</span>
+      {% if run %}<span class="meta">{{ run.fast_model }}</span><span class="meta">Updated {{ run.updated_at }}</span>{% else %}<span class="meta">No results yet.</span>{% endif %}
     </div>
   </section>
-  {% if not run %}<p class="notice">The statements are ready. This page displays saved results only; opening it does not run the evaluation.</p>{% elif stats.pending or stats.interrupted %}<p class="notice">This snapshot is incomplete: {{ stats.completed }} checks finished, {{ stats.pending }} have not been attempted, and {{ stats.interrupted }} were interrupted. An interrupted check is never retried automatically.</p>{% endif %}
-  <section class="metrics plate" aria-label="Evaluation statistics">
+  {% if not run %}<p class="notice">No results yet. This page only shows saved results. Opening it doesn't start a test run.</p>{% elif stats.pending or stats.interrupted %}<p class="notice">This run didn't finish: {{ stats.completed }} checks done, {{ stats.pending }} not started and {{ stats.interrupted }} interrupted. Interrupted checks aren't retried.</p>{% endif %}
+  <section class="metrics plate" aria-label="Results">
     {% for metric in stats.metrics %}<div class="metric"><h2>{{ metric.label }}</h2><div class="figure">{{ metric.value }}</div><p>{{ metric.detail }}</p></div>{% endfor %}
   </section>
   <section class="confusion plate" aria-label="Confusion matrix counts">
     <div><span class="count">{{ stats.tp }}</span><span>True positives</span></div><div><span class="count">{{ stats.tn }}</span><span>True negatives</span></div><div><span class="count">{{ stats.fp }}</span><span>False positives</span></div><div><span class="count">{{ stats.fn }}</span><span>False negatives</span></div>
   </section>
-  <p class="method">Positive means <strong>SUPPORTED</strong>; negative means <strong>REFUTED</strong>. Ground truth comes from the supplied file labels. Overall accuracy includes all attempted statements; abstentions and failed or interrupted checks do not count as correct. Precision, recall, F1 and specificity use decisive verdicts only. Abstentions: <strong>{{ stats.abstentions }}</strong> · Failed checks: <strong>{{ stats.failed }}</strong> · Unavailable deeper analyses: <strong>{{ stats.correction_failures }}</strong> · Decisive accuracy: <strong>{{ stats.decisive_accuracy }}</strong>. Each numbered row pairs the same line from the two files; corrections are generated independently of the paired answer.</p>
-  <div class="section-heading"><h2>The complete record</h2><span class="meta">100 ROWS · 200 STATEMENTS · SAVED RESULTS</span></div>
+  <p class="method">"Positive" means the checker answered <strong>SUPPORTED</strong> and "negative" means <strong>REFUTED</strong>. Whether a statement is really true or false comes from the file it's in. Accuracy counts every statement the checker tried, so "not enough info" answers and failed checks count as wrong. Precision, recall, F1 and specificity only count SUPPORTED and REFUTED answers. Not enough info: <strong>{{ stats.abstentions }}</strong> · Failed checks: <strong>{{ stats.failed }}</strong> · Failed corrections: <strong>{{ stats.correction_failures }}</strong> · Accuracy when it gave a verdict: <strong>{{ stats.decisive_accuracy }}</strong>. Each row puts line N of the true file next to line N of the false file. The two statements are checked separately.</p>
+  <div class="section-heading"><h2>All results</h2><span class="meta">100 rows, 200 statements</span></div>
   <div class="table-wrap plate">
-    <table aria-label="100 paired true and false statements and their model results">
+    <table aria-label="100 pairs of true and false statements and the verdicts for each">
       <colgroup><col class="statement"><col class="statement"><col class="prediction"><col class="prediction"><col class="correction"></colgroup>
-      <thead><tr><th scope="col">True statement</th><th scope="col">False statement</th><th scope="col">Fast verdict · true</th><th scope="col">Fast verdict · false</th><th scope="col">Correction found</th></tr></thead>
+      <thead><tr><th scope="col">True statement</th><th scope="col">False statement</th><th scope="col">Verdict (true)</th><th scope="col">Verdict (false)</th><th scope="col">Suggested correction</th></tr></thead>
       <tbody>{% for row in rows %}<tr>
         <td><span class="row-number">{{ row.number|stringformat:"03d" }}</span>{{ row.true.text }}</td><td>{{ row.false.text }}</td>
-        <td>{% if row.true.status == "done" %}<span class="verdict" data-decision="{{ row.true.decision }}">{{ row.true.decision }}</span>{% if row.true.decision == "NOT ENOUGH INFO" %}<span class="evaluation">Abstained</span>{% elif row.true.decision == row.true.expected %}<span class="evaluation">Matches label</span>{% else %}<span class="evaluation mismatch">Mismatch</span>{% endif %}{% elif row.true.status == "error" %}<span class="muted">Check failed · not retried</span>{% elif row.true.status == "started" %}<span class="muted">Unconfirmed · not retried</span>{% else %}<span class="muted">Not run</span>{% endif %}</td>
-        <td>{% if row.false.status == "done" %}<span class="verdict" data-decision="{{ row.false.decision }}">{{ row.false.decision }}</span>{% if row.false.decision == "NOT ENOUGH INFO" %}<span class="evaluation">Abstained</span>{% elif row.false.decision == row.false.expected %}<span class="evaluation">Matches label</span>{% else %}<span class="evaluation mismatch">Mismatch</span>{% endif %}{% elif row.false.status == "error" %}<span class="muted">Check failed · not retried</span>{% elif row.false.status == "started" %}<span class="muted">Unconfirmed · not retried</span>{% else %}<span class="muted">Not run</span>{% endif %}</td>
+        <td>{% if row.true.status == "done" %}<span class="verdict" data-decision="{{ row.true.decision }}">{{ row.true.decision }}</span>{% if row.true.decision == "NOT ENOUGH INFO" %}<span class="evaluation">No verdict</span>{% elif row.true.decision == row.true.expected %}<span class="evaluation">Correct</span>{% else %}<span class="evaluation mismatch">Wrong</span>{% endif %}{% elif row.true.status == "error" %}<span class="muted">Check failed</span>{% elif row.true.status == "started" %}<span class="muted">Interrupted</span>{% else %}<span class="muted">Not run</span>{% endif %}</td>
+        <td>{% if row.false.status == "done" %}<span class="verdict" data-decision="{{ row.false.decision }}">{{ row.false.decision }}</span>{% if row.false.decision == "NOT ENOUGH INFO" %}<span class="evaluation">No verdict</span>{% elif row.false.decision == row.false.expected %}<span class="evaluation">Correct</span>{% else %}<span class="evaluation mismatch">Wrong</span>{% endif %}{% elif row.false.status == "error" %}<span class="muted">Check failed</span>{% elif row.false.status == "started" %}<span class="muted">Interrupted</span>{% else %}<span class="muted">Not run</span>{% endif %}</td>
         <td>
-          {% for correction in row.false.corrections %}<div class="correction-entry"><p>{{ correction.text }}</p>{% for source in correction.evidence %}<a href="{{ source.source }}" target="_blank" rel="noopener noreferrer" title="{{ source.quote }}">Wikipedia source {{ forloop.counter }}</a>{% endfor %}</div>{% endfor %}
-          {% for correction in row.true.corrections %}<div class="correction-entry"><span class="correction-label">MODEL'S CORRECTION TO THE TRUE STATEMENT</span><p>{{ correction.text }}</p>{% for source in correction.evidence %}<a href="{{ source.source }}" target="_blank" rel="noopener noreferrer" title="{{ source.quote }}">Wikipedia source {{ forloop.counter }}</a>{% endfor %}</div>{% endfor %}
-          {% if not row.false.corrections and not row.true.corrections %}<span class="muted">{% if row.false.analysis_status == "error" or row.true.analysis_status == "error" %}Correction unavailable{% elif row.false.analysis_status == "started" or row.true.analysis_status == "started" %}Analysis unconfirmed{% elif row.false.status == "pending" or row.true.status == "pending" %}—{% else %}No correction found{% endif %}</span>{% endif %}
+          {% for correction in row.false.corrections %}<div class="correction-entry"><p>{{ correction.text }}</p>{% for source in correction.evidence %}<a href="{{ source.source }}" target="_blank" rel="noopener noreferrer" title="{{ source.quote }}">Source {{ forloop.counter }}</a>{% endfor %}</div>{% endfor %}
+          {% for correction in row.true.corrections %}<div class="correction-entry"><span class="correction-label">Correction to the true statement</span><p>{{ correction.text }}</p>{% for source in correction.evidence %}<a href="{{ source.source }}" target="_blank" rel="noopener noreferrer" title="{{ source.quote }}">Source {{ forloop.counter }}</a>{% endfor %}</div>{% endfor %}
+          {% if not row.false.corrections and not row.true.corrections %}<span class="muted">{% if row.false.analysis_status == "error" or row.true.analysis_status == "error" %}Correction failed{% elif row.false.analysis_status == "started" or row.true.analysis_status == "started" %}Interrupted{% elif row.false.status == "pending" or row.true.status == "pending" %}—{% else %}None{% endif %}</span>{% endif %}
         </td>
       </tr>{% endfor %}</tbody>
     </table>
   </div>
-  <footer><span class="meta">Wikipedia Fact Check · Finnish-history benchmark</span><span class="meta">{% if run %}Analysis: {{ run.analysis_model }} · Run {{ run.run_id }}{% else %}No evaluation runs on page load.{% endif %}</span></footer>
+  <footer><span class="meta">Wikipedia Fact Check</span><span class="meta">{% if run %}Correction model: {{ run.analysis_model }} · Run {{ run.run_id }}{% endif %}</span></footer>
 </main>
 </body>
 </html>
