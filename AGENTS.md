@@ -9,10 +9,9 @@
 
 ## Running the backend
 
-With Docker (preferred). `/api/factcheck/` also needs the RAG stack running and loaded (see `rag/README.md`) and `GEMINI_API_KEY` in `backend/.env`:
+With Docker (preferred). One `docker-compose.yml` in the root runs the backend, MariaDB (host port 3307) and Ollama (host port 11434). `/api/factcheck/` also needs the RAG data loaded (see `rag/README.md`) and `GEMINI_API_KEY` in `backend/.env`:
 
 ```bash
-docker compose -f rag/docker-compose.yml up -d --wait   # MariaDB :3307, Ollama :11434
 docker compose up --build                              # http://localhost:8000/api/health/
 docker compose exec backend python manage.py test
 docker compose exec backend python manage.py makemigrations
