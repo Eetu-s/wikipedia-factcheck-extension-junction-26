@@ -33,7 +33,7 @@
       const shown = scan.sentences.filter((s) => s.status !== "failed");
       const groups = Object.fromEntries(names.map((name) => [name, []]));
       for (const sentence of shown) {
-        if (scan.invalid) continue;
+        if (scan.invalid || scan.ui.isAnimating(sentence)) continue;
         const group = sentence.status !== "done" ? "pending" :
           sentence.result.decision === "SUPPORTED" ? "supported" :
             sentence.result.decision === "REFUTED" ? "refuted" : "uncertain";
@@ -300,7 +300,7 @@
       ::highlight(wfc-refuted) { background-color: rgba(181,54,45,.20); text-decoration: underline #b5362d; }
       ::highlight(wfc-uncertain) { background-color: rgba(100,100,100,.16); text-decoration: underline #777; }
       ::highlight(wfc-failed) { background-color: rgba(100,100,100,.10); text-decoration: underline wavy #777; }
-      ::highlight(wfc-hopping) { color: transparent; text-shadow: none; }
+      ::highlight(wfc-animating) { color: transparent; background-color: transparent; text-shadow: none; text-decoration-color: transparent; }
     `;
     let style;
     if (globalThis.CSSStyleSheet?.prototype.replaceSync && "adoptedStyleSheets" in document) {
@@ -322,7 +322,7 @@
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };
     scan = current;
-    current.ui = WikiFactPageUI.create({ onStop: () => stop(), onClear: clear, onRescan: start, onRetry: retry, onSelect: analyze });
+    current.ui = WikiFactPageUI.create({ onStop: () => stop(), onClear: clear, onRescan: start, onRetry: retry, onSelect: analyze, onAnimationChange: refresh });
     for (const sentence of current.sentences) {
       for (const { node } of sentence.segments) {
         const list = current.byNode.get(node) || [];

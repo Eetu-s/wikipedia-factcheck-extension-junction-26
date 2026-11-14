@@ -22,8 +22,11 @@ Sentences begin with subtle gray pending highlights and update progressively:
 - **◌ Pending/checking**, **Ⅱ Stopped**, and **! Failed** have distinct labels; failed
   checks also use a wavy gray underline.
 
-Visible sentences hop up 4 pixels and settle as their verdict arrives. This animation
-respects reduced-motion preferences and leaves the article's text and layout intact.
+While checking, visible text pulses lighter and darker in a wave moving from left to
+right, without jumping. When a verdict arrives, its highlight sweeps smoothly from
+right to left; each letter lifts 4 pixels and settles as the color reaches it. These
+animations respect reduced-motion preferences and leave the article's text and
+layout intact.
 
 Hover shows the fast verdict, confidence, and sources. Click a completed sentence, or use
 **Open result** in the guide, to pin the result and request deeper analysis. All completed
@@ -153,7 +156,6 @@ directory; no npm dependencies are needed to load the extension itself:
 npm install --prefix /tmp/wfc-tests playwright-core
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/article.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-ui.test.cjs
-NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-scan.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/scan-animation.test.cjs
 ```
 
