@@ -5,7 +5,7 @@
   // Sentences go to the backend in batches: one request checks up to BATCH_SIZE sentences
   // (one password check, one embedding call and one database write on the server).
   // CONCURRENCY is the number of batches in flight.
-  const CONCURRENCY = 2;
+  const CONCURRENCY = 4;
   const BATCH_SIZE = 8;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
