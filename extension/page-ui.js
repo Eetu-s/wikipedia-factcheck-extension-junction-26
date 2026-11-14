@@ -48,7 +48,7 @@
     if (sentence.status !== "done") return sentence.status === "running" ? "◌ Checking…" : "◌ Pending";
     if (sentence.result?.decision === "SUPPORTED") return "✓ Supported";
     if (sentence.result?.decision === "REFUTED") return "× Refuted";
-    return "? Uncertain / not fact-checkable";
+    return "Can't be confirmed from wikipedia";
   }
   function sourceLink(source, title) {
     let url;
@@ -297,7 +297,7 @@
     function renderPopover(guideAnnouncement = "") {
       if (!current) return;
       const sentenceState = JSON.stringify([current.id, current.status, current.result?.decision, current.error,
-        current.deep?.status, current.deep?.error, current.deep?.incomplete]);
+      current.deep?.status, current.deep?.error, current.deep?.incomplete]);
       let sentenceAnnouncement = "";
       if (sentenceState !== announcedSentenceState) {
         announcedSentenceState = sentenceState;
@@ -413,8 +413,10 @@
       window.visualViewport?.removeEventListener("resize", clamp);
       host.remove();
     }
-    return { update, show, hide, destroy, scheduleHide, cancelHide, isPinned: () => pinned,
-      contains: target => target === host || shadow.contains(target), host };
+    return {
+      update, show, hide, destroy, scheduleHide, cancelHide, isPinned: () => pinned,
+      contains: target => target === host || shadow.contains(target), host
+    };
   }
   globalThis.WikiFactPageUI = Object.freeze({ create });
 })();
