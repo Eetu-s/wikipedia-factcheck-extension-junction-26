@@ -64,6 +64,7 @@
   function stop(current = scan) {
     if (!current) return;
     current.stopped = true;
+    current.ui.clearAnimations();
     clearTimeout(wakeTimer);
     current.cancelFast = send("WFC_SCAN_CANCEL", { kind: "fast" }, current).catch(() => {});
     for (const sentence of current.sentences) {
@@ -183,6 +184,7 @@
       sentence.result = result;
       sentence.status = "done";
       current.error = "";
+      current.ui.animateSentence(sentence);
     } catch (error) {
       if (!live(current) || sentence.version !== version || current.stopped && sentence.status !== "running") return;
       sentence.status = "failed";
@@ -273,6 +275,7 @@
       ::highlight(wfc-refuted) { background-color: rgba(181,54,45,.20); text-decoration: underline #b5362d; }
       ::highlight(wfc-uncertain) { background-color: rgba(100,100,100,.16); text-decoration: underline #777; }
       ::highlight(wfc-failed) { background-color: rgba(100,100,100,.10); text-decoration: underline wavy #777; }
+      ::highlight(wfc-hopping) { color: transparent; text-shadow: none; }
     `;
     let style;
     if (globalThis.CSSStyleSheet?.prototype.replaceSync && "adoptedStyleSheets" in document) {
