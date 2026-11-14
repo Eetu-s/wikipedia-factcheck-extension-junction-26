@@ -6,7 +6,8 @@ returns the closest Wikipedia articles **as JSON**. The search is ported from
 and uses the same data: 29,460 *History of Finland* articles in Finnish, Swedish and English, with
 ready-made bge-m3 vectors.
 
-The backend does not use this yet.
+The Django backend uses this for `/api/factcheck/` (see `backend/factcheck/checker.py`). Its
+container reaches MariaDB and Ollama through the host's ports 3307 and 11434.
 
 ## Setup
 
