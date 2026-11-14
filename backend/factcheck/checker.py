@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -9,6 +10,8 @@ import pymysql
 from django.conf import settings
 from wikirag import EmbeddingError, semantic_search
 from wikirag.db import connect
+
+from .context import CONTEXT_RULES, context_input, retrieval_query
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,10 @@ class FactCheckResult:
 class CheckerError(Exception):
     """The fact check couldn't be done (e.g. Gemini is not configured or returned an error)."""
 
+    def __init__(self, message, *, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
 
 # How many Wikipedia articles to give the model, and how much of each one.
 RAG_ARTICLES = 3
@@ -49,8 +56,7 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/decisions"
 VERDICT_QUESTION = {
     "type": "choice",
     "instructions": (
-        "You are a fact-checker. Using only the Wikipedia articles in the input, "
-        "is the claim true or false?"
+        "You are a fact-checker. " + CONTEXT_RULES
     ),
     "criteria": {
         "supported": "The articles show the claim is correct.",
@@ -65,17 +71,30 @@ CHOICE_TO_DECISION = {
 }
 
 
-def check(text: str) -> tuple[FactCheckResult, list[dict]]:
+def check(text: str, context: dict | None = None) -> tuple[FactCheckResult, list[dict]]:
     """The verdict and its explanation articles ([{"title", "url", "text"}, ...])."""
-    articles = search_wikipedia(text)
-    answers = ask_gemini(text, articles)
-    verdict = answers["verdict"]
-    decision = CHOICE_TO_DECISION[verdict["choice"]]
-    sources = pick_sources(decision, articles, answers)
+    articles = search_wikipedia(retrieval_query(text, context))
+    if not articles:
+        return FactCheckResult(decision=Decision.NOT_ENOUGH_INFO, confidence=0.0), []
+    answers = ask_gemini(text, articles, context) if context else ask_gemini(text, articles)
+    try:
+        verdict = answers["verdict"]
+        decision = CHOICE_TO_DECISION[verdict["choice"]]
+        confidence = verdict["confidence"]
+        if (type(confidence) not in (int, float) or not math.isfinite(confidence)
+                or not 0 <= confidence <= 1):
+            raise ValueError("Invalid confidence.")
+        for i in range(len(articles)):
+            score = answers[f"source_{i}"]["noul"]
+            if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 1:
+                raise ValueError("Invalid source score.")
+        sources = pick_sources(decision, articles, answers)
+    except (KeyError, TypeError, ValueError) as error:
+        raise CheckerError("Gemini's decision was not in the expected format.") from error
     result = FactCheckResult(decision=decision, confidence=verdict["confidence"], sources=sources)
     # A refuted selection can contain several independent errors. Let the deeper analysis
     # see every candidate, while preserving the supported explanation's source filtering.
-    return result, articles if decision == Decision.REFUTED else [
+    return result, articles if context is not None or decision == Decision.REFUTED else [
         a for a in articles if a["url"] in sources
     ]
 
@@ -124,8 +143,8 @@ def pick_sources(decision: Decision, articles: list[dict], answers: dict) -> lis
     return sources
 
 
-def build_input(claim: str, articles: list[dict]) -> str:
-    parts = [f"Claim: {claim}\n\nWikipedia articles:"]
+def build_input(claim: str, articles: list[dict], context: dict | None = None) -> str:
+    parts = [f"TARGET SENTENCE\n{claim}", f"PAGE CONTEXT (not evidence)\n{context_input(context)}", "WIKIPEDIA EVIDENCE"]
     for i, a in enumerate(articles, 1):
         parts.append(f"[Article {i}] {a['title']} ({a['url']})\n{a['text']}")
     return "\n\n".join(parts)
@@ -136,12 +155,12 @@ def source_question(number: int) -> dict:
         "type": "noul",
         "instructions": (
             f"Does Article {number} contain information that directly supports or contradicts "
-            "the claim?"
+            "only the TARGET SENTENCE after disambiguation, using no PAGE CONTEXT as evidence?"
         ),
     }
 
 
-def ask_gemini(claim: str, articles: list[dict]) -> dict:
+def ask_gemini(claim: str, articles: list[dict], context: dict | None = None) -> dict:
     """Ask Gemini Decision 1 for a verdict, and which articles bear on it, in one call.
 
     Returns {"verdict": {"choice": "supported", "confidence": 0.97, ...},
@@ -155,7 +174,7 @@ def ask_gemini(claim: str, articles: list[dict]) -> dict:
         questions[f"source_{i}"] = source_question(i + 1)
     body = {
         "model": GEMINI_MODEL,
-        "input": build_input(claim, articles),
+        "input": build_input(claim, articles, context),
         "questions": questions,
     }
     request = urllib.request.Request(
@@ -167,8 +186,17 @@ def ask_gemini(claim: str, articles: list[dict]) -> dict:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.load(response)
     except urllib.error.HTTPError as e:
-        raise CheckerError(f"Gemini returned HTTP {e.code}: {e.read().decode(errors='replace')}") from e
+        retry_after = None
+        if e.code == 429:
+            try:
+                retry_after = min(300, max(1, int((e.headers or {}).get("Retry-After", "1"))))
+            except (ValueError, TypeError):
+                retry_after = 1
+        # Provider error bodies may contain credentials or request data. Keep them server-side.
+        raise CheckerError(f"Gemini returned HTTP {e.code}.", retry_after=retry_after) from e
     except (urllib.error.URLError, TimeoutError) as e:
         raise CheckerError(f"Can't reach Gemini: {e}") from e
     # Answers come back under the same keys as the questions.
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+        raise CheckerError("Gemini's decision was not in the expected format.")
     return data["answers"]

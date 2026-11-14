@@ -1,20 +1,24 @@
 import fcntl
 import json
+import logging
 import os
 import tempfile
 import time
 from dataclasses import asdict
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from .checker import CheckerError, check
-from .explainer import start_explanation
-from .models import Explanation
+from .context import normalize_context
+from .explainer import start_explanation, start_page_analysis
+from .models import Explanation, PageCheck
 from .accuracy import dataset, read_snapshot, statistics
 
 # How long GET /api/factcheck/explanation/<id>/ waits for the explanation before answering
@@ -25,6 +29,7 @@ EXPLANATION_WAIT_SECONDS = 25
 # /api/factcheck-ratelimit/ accepts at most one request per this many seconds, from all clients.
 RATELIMIT_SECONDS = 1.0
 RATELIMIT_FILE = os.path.join(tempfile.gettempdir(), "factcheck-ratelimit")
+logger = logging.getLogger(__name__)
 
 
 @require_GET
@@ -131,13 +136,101 @@ def run_check(body: dict) -> JsonResponse:
     text = body.get("text")
     if not isinstance(text, str) or not text.strip():
         return JsonResponse({"error": "'text' must be a non-empty string."}, status=400)
+    if len(text) > 30000:
+        return JsonResponse({"error": "'text' exceeds 30000 characters."}, status=400)
+    fast_only = body.get("fast_only", False)
+    if not isinstance(fast_only, bool):
+        return JsonResponse({"error": "'fast_only' must be a boolean."}, status=400)
+    sentence_id = body.get("sentence_id", "")
+    if not isinstance(sentence_id, str) or len(sentence_id) > 200:
+        return JsonResponse({"error": "'sentence_id' must be a string of at most 200 characters."}, status=400)
+    try:
+        context = normalize_context(body.get("context"))
+    except ValueError as error:
+        return JsonResponse({"error": str(error)}, status=400)
 
     try:
-        result, source_articles = check(text)
+        result, source_articles = check(text, context) if fast_only or context else check(text)
     except CheckerError as e:
+        if fast_only and e.retry_after is not None:
+            response = JsonResponse({"error": "Fact check rate limited. Please retry later."}, status=429)
+            response["Retry-After"] = str(e.retry_after)
+            return response
+        if fast_only:
+            logger.warning("Fast page fact check failed: %s", e)
+            return JsonResponse({"error": "Fact check is unavailable. Please retry."}, status=502)
         return JsonResponse({"error": f"Fact check failed: {e}"}, status=502)
+    if fast_only:
+        row = PageCheck.objects.create(
+            sentence_id=sentence_id, original_text=text, context=context,
+            decision=result.decision, confidence=result.confidence,
+            sources=result.sources, evidence=source_articles,
+        )
+        return JsonResponse({**asdict(result), "check_id": str(row.pk), "sentence_id": sentence_id})
     result.explanation_id = start_explanation(text, result.decision, source_articles)
     return JsonResponse(asdict(result))
+
+
+def authenticated_password(password):
+    return isinstance(password, str) and bool(settings.FACTCHECK_PASSWORD_HASH) and check_password(
+        password, settings.FACTCHECK_PASSWORD_HASH
+    )
+
+
+def page_check_response(row):
+    payload = {"check_id": str(row.pk), "sentence_id": row.sentence_id,
+               "decision": row.decision, "confidence": row.confidence,
+               "sources": row.sources, "explanation_id": None, "status": "not_requested"}
+    if row.explanation_id:
+        explanation = row.explanation
+        if (explanation.status == Explanation.Status.PENDING
+                and explanation.created_at < timezone.now() - timedelta(minutes=3)):
+            # A server restart can interrupt a daemon worker. Never leave a click pending forever.
+            Explanation.objects.filter(pk=explanation.pk, status=Explanation.Status.PENDING).update(
+                status=Explanation.Status.ERROR, error="Deeper analysis timed out.",
+            )
+            explanation.refresh_from_db()
+        payload.update(explanation_id=str(explanation.pk), status=explanation.status)
+        if explanation.status == Explanation.Status.DONE:
+            payload.update(paragraphs=explanation.paragraphs, **explanation.analysis)
+        elif explanation.status == Explanation.Status.ERROR:
+            payload["error"] = explanation.error
+    response = JsonResponse(payload)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@csrf_exempt
+@require_POST
+def analyze_page_check(request, check_id):
+    """An explicit click attaches one explanation; duplicate clicks reuse it across workers."""
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"error": "Request body must be JSON."}, status=400)
+    if not isinstance(body, dict):
+        return JsonResponse({"error": "Request body must be a JSON object."}, status=400)
+    if not authenticated_password(body.get("password")):
+        return JsonResponse({"error": "Invalid password."}, status=401)
+    row = PageCheck.objects.filter(pk=check_id).first()
+    if row is None:
+        return JsonResponse({"error": "Unknown check id."}, status=404)
+    start_page_analysis(row)
+    row.refresh_from_db()
+    return page_check_response(row)
+
+
+@require_GET
+def page_check(request, check_id):
+    """Authenticated, non-blocking polling. Passwords never travel in URL query strings."""
+    authorization = request.headers.get("Authorization", "")
+    password = authorization[7:] if authorization.startswith("Bearer ") else None
+    if not authenticated_password(password):
+        return JsonResponse({"error": "Invalid password."}, status=401)
+    row = PageCheck.objects.select_related("explanation").filter(pk=check_id).first()
+    if row is None:
+        return JsonResponse({"error": "Unknown check id."}, status=404)
+    return page_check_response(row)
 
 
 @require_GET
@@ -155,6 +248,12 @@ def explanation(request, explanation_id):
         row = Explanation.objects.filter(pk=explanation_id).first()
         if row is None:
             return JsonResponse({"error": "Unknown explanation id."}, status=404)
+        # Page analyses require authentication even through this legacy UUID route.
+        if PageCheck.objects.filter(explanation=row).exists():
+            authorization = request.headers.get("Authorization", "")
+            password = authorization[7:] if authorization.startswith("Bearer ") else None
+            if not authenticated_password(password):
+                return JsonResponse({"error": "Invalid password."}, status=401)
         if row.status == Explanation.Status.DONE:
             return JsonResponse({"status": row.status, "paragraphs": row.paragraphs, **row.analysis})
         if row.status == Explanation.Status.ERROR:
