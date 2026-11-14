@@ -83,6 +83,12 @@ function decisionLabel(decision) {
 // Anything that is not an http(s) URL is shown as plain text, never as a link.
 function sourceItem(source) {
   const item = el("li");
+  item.append(...sourceLink(source));
+  return item;
+}
+
+// The nodes for one source: [link, host], or [plain text] when it isn't an http(s) URL.
+function sourceLink(source) {
   let url;
   try {
     url = new URL(source);
@@ -90,8 +96,7 @@ function sourceItem(source) {
     url = null;
   }
   if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
-    item.append(el("span", null, String(source)));
-    return item;
+    return [el("span", null, String(source))];
   }
   let title = url.href;
   const match = url.pathname.match(/\/wiki\/(.+)$/);
@@ -106,8 +111,7 @@ function sourceItem(source) {
   link.href = url.href;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
-  item.append(link, el("span", "host", url.hostname));
-  return item;
+  return [link, el("span", "host", url.hostname)];
 }
 
 function renderClaim(text) {
@@ -165,7 +169,46 @@ function renderDone(job) {
     sources.append(ol);
   }
   plate.append(sources);
+
+  // Sent by the backend after the verdict; absent for "Not enough info".
+  if (job.explanation) plate.append(renderExplanation(result.decision, job.explanation));
   return plate;
+}
+
+// The paragraphs from the sources that give the verdict, one per source.
+function renderExplanation(decision, explanation) {
+  const section = el("div", "explanation");
+  section.dataset.decision = decision;
+  const heading = decision === "REFUTED" ? "Why it's refuted" : decision === "SUPPORTED" ? "Why it's supported" : "Why";
+  section.append(el("h2", null, heading));
+
+  if (explanation.status === "loading") {
+    const skeleton = el("div", "skeleton");
+    skeleton.setAttribute("aria-hidden", "true");
+    skeleton.append(el("span"), el("span"), el("span"));
+    section.append(skeleton, el("p", "status", "Finding the paragraphs behind the verdict…"));
+    return section;
+  }
+  if (explanation.status === "error") {
+    section.append(el("p", "none", "No explanation: " + explanation.error));
+    return section;
+  }
+  const paragraphs = Array.isArray(explanation.paragraphs) ? explanation.paragraphs : [];
+  if (paragraphs.length === 0) {
+    section.append(el("p", "none", "No paragraphs were returned."));
+    return section;
+  }
+  const list = el("ol");
+  for (const p of paragraphs) {
+    const item = el("li");
+    const quote = el("blockquote", null, String(p.paragraph ?? ""));
+    const cite = el("div", "cite");
+    cite.append(...sourceLink(p.source));
+    item.append(quote, cite);
+    list.append(item);
+  }
+  section.append(list);
+  return section;
 }
 
 function renderLoading(job) {

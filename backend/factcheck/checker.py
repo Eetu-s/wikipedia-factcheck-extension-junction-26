@@ -24,6 +24,8 @@ class FactCheckResult:
     decision: Decision
     confidence: float  # 0.0–1.0
     sources: list[str] = field(default_factory=list)  # Source URLs backing the decision.
+    # Id for fetching the explanation later (see explainer.py); None for NOT ENOUGH INFO.
+    explanation_id: str | None = None
 
 
 class CheckerError(Exception):
@@ -63,16 +65,15 @@ CHOICE_TO_DECISION = {
 }
 
 
-def check(text: str) -> FactCheckResult:
+def check(text: str) -> tuple[FactCheckResult, list[dict]]:
+    """The verdict, and the source articles behind it ([{"title", "url", "text"}, ...])."""
     articles = search_wikipedia(text)
     answers = ask_gemini(text, articles)
     verdict = answers["verdict"]
     decision = CHOICE_TO_DECISION[verdict["choice"]]
-    return FactCheckResult(
-        decision=decision,
-        confidence=verdict["confidence"],
-        sources=pick_sources(decision, articles, answers),
-    )
+    sources = pick_sources(decision, articles, answers)
+    result = FactCheckResult(decision=decision, confidence=verdict["confidence"], sources=sources)
+    return result, [a for a in articles if a["url"] in sources]
 
 
 def search_wikipedia(claim: str) -> list[dict]:

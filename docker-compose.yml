@@ -13,14 +13,15 @@ services:
     env_file:
       - path: backend/.env
         required: false
+    # Development server: reloads on code changes (the image's default command is gunicorn).
+    command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
     environment:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      DJANGO_SECURE_SSL_REDIRECT: "0"
       # MariaDB and Ollama below, over the compose network.
       RAG_DB_HOST: mariadb
       RAG_DB_PORT: "3306"
       RAG_OLLAMA_URL: http://ollama:11434
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       mariadb:
         condition: service_healthy

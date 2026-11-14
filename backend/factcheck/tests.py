@@ -29,6 +29,7 @@ def fake_gemini_response(choice, confidence, source_scores=(0.9, 0.1)):
 
 
 @override_settings(FACTCHECK_PASSWORD_HASH=make_password("pw"), GEMINI_API_KEY="test-key")
+@patch("factcheck.views.start_explanation", return_value="explanation-id")
 @patch("factcheck.checker.search_wikipedia", return_value=FAKE_ARTICLES)
 class FactCheckTests(TestCase):
     def post(self, text="The Eiffel Tower was completed in 1889.", password="pw"):
@@ -37,7 +38,7 @@ class FactCheckTests(TestCase):
         )
 
     @patch("factcheck.checker.urllib.request.urlopen")
-    def test_returns_gemini_decision(self, urlopen, search):
+    def test_returns_gemini_decision(self, urlopen, search, start_explanation):
         urlopen.return_value = fake_gemini_response("supported", 0.97)
         response = self.post()
         self.assertEqual(response.status_code, 200)
@@ -47,6 +48,7 @@ class FactCheckTests(TestCase):
                 "decision": "SUPPORTED",
                 "confidence": 0.97,
                 "sources": ["https://en.wikipedia.org/wiki/Eiffel_Tower"],
+                "explanation_id": "explanation-id",
             },
         )
 
@@ -59,18 +61,18 @@ class FactCheckTests(TestCase):
         self.assertEqual(request.get_header("X-goog-api-key"), "test-key")
 
     @patch("factcheck.checker.urllib.request.urlopen")
-    def test_maps_all_choices(self, urlopen, search):
+    def test_maps_all_choices(self, urlopen, search, start_explanation):
         for choice, decision in [("refuted", "REFUTED"), ("not_enough_info", "NOT ENOUGH INFO")]:
             urlopen.return_value = fake_gemini_response(choice, 0.8)
             self.assertEqual(self.post().json()["decision"], decision)
 
     @patch("factcheck.checker.urllib.request.urlopen")
-    def test_wrong_password_does_not_call_gemini(self, urlopen, search):
+    def test_wrong_password_does_not_call_gemini(self, urlopen, search, start_explanation):
         self.assertEqual(self.post(password="wrong").status_code, 401)
         urlopen.assert_not_called()
 
     @patch("factcheck.checker.urllib.request.urlopen")
-    def test_gemini_error_returns_502(self, urlopen, search):
+    def test_gemini_error_returns_502(self, urlopen, search, start_explanation):
         urlopen.side_effect = urllib.error.HTTPError(
             "url", 429, "Too Many Requests", {}, io.BytesIO(b"quota exceeded")
         )
@@ -79,7 +81,7 @@ class FactCheckTests(TestCase):
         self.assertIn("429", response.json()["error"])
 
     @override_settings(GEMINI_API_KEY="")
-    def test_missing_gemini_key_returns_502(self, search):
+    def test_missing_gemini_key_returns_502(self, search, start_explanation):
         response = self.post()
         self.assertEqual(response.status_code, 502)
         self.assertIn("GEMINI_API_KEY", response.json()["error"])
