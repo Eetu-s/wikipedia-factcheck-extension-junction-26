@@ -12,11 +12,11 @@ import urllib.request
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import close_old_connections, connection
+from django.db import close_old_connections, connection, transaction
 from django.utils import timezone
 
 from .checker import Decision
-from .models import Explanation
+from .models import Explanation, PageCheck
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +73,61 @@ def start_explanation(claim: str, decision: Decision, articles: list[dict]) -> s
     """
     if decision == Decision.NOT_ENOUGH_INFO or not articles:
         return None
-    Explanation.objects.filter(created_at__lt=timezone.now() - KEEP_FOR).delete()
+    Explanation.objects.filter(created_at__lt=timezone.now() - KEEP_FOR, pagecheck__isnull=True).delete()
     explanation = Explanation.objects.create()
     threading.Thread(
         target=_run, args=(explanation.pk, claim, decision, articles), daemon=True
     ).start()
     return str(explanation.pk)
+
+
+def start_page_analysis(row):
+    """Atomically claim a stored check before dispatching its sole analysis worker.
+
+    A conditional UPDATE also protects SQLite, where select_for_update is a no-op.
+    Losing requests never launch a thread and return the winning explanation instead.
+    """
+    if row.explanation_id:
+        return
+    with transaction.atomic():
+        explanation = Explanation.objects.create()
+        claimed = PageCheck.objects.filter(pk=row.pk, explanation__isnull=True).update(
+            explanation=explanation,
+        )
+        if not claimed:
+            explanation.delete()
+            return
+        transaction.on_commit(lambda: launch_page_analysis(explanation.pk, row))
+
+
+def launch_page_analysis(explanation_id, row):
+    try:
+        threading.Thread(target=_run_page, args=(explanation_id, row), daemon=True).start()
+    except Exception:
+        logger.exception("Could not dispatch page analysis %s", explanation_id)
+        Explanation.objects.filter(pk=explanation_id).update(
+            status=Explanation.Status.ERROR, error="Could not start deeper analysis.",
+        )
+
+
+def _run_page(explanation_id, row):
+    close_old_connections()
+    try:
+        from .analysis import analyze_claim
+
+        analysis = analyze_claim(row.original_text, row.evidence, row.decision, row.context)
+        paragraphs = analysis.pop("paragraphs", [])
+        Explanation.objects.filter(pk=explanation_id, status=Explanation.Status.PENDING).update(
+            status=Explanation.Status.DONE, paragraphs=paragraphs, analysis=analysis,
+        )
+    except Exception as error:
+        logger.exception("Page analysis %s failed", explanation_id)
+        Explanation.objects.filter(pk=explanation_id).update(
+            status=Explanation.Status.ERROR,
+            error=str(error) if isinstance(error, ExplainerError) else "Internal error.",
+        )
+    finally:
+        connection.close()
 
 
 def _run(explanation_id, claim, decision, articles):
@@ -150,7 +199,7 @@ def generate_json(prompt: str, schema: dict, timeout: float = 60) -> dict:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as e:
-        raise ExplainerError(f"Gemini returned HTTP {e.code}: {e.read().decode(errors='replace')}") from e
+        raise ExplainerError(f"Gemini returned HTTP {e.code}.") from e
     except (urllib.error.URLError, TimeoutError) as e:
         raise ExplainerError(f"Can't reach Gemini: {e}") from e
 

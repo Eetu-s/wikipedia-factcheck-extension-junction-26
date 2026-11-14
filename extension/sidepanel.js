@@ -38,7 +38,7 @@ loginForm.addEventListener("submit", async (event) => {
   let status;
   try {
     const { protocol, hostname } = new URL(url);
-    if (protocol !== "https:" && hostname !== "localhost" && hostname !== "127.0.0.1") {
+    if (protocol !== "https:" && !(protocol === "http:" && ["localhost", "127.0.0.1"].includes(hostname))) {
       throw new Error("not https");
     }
     const response = await fetch(url, {
@@ -341,7 +341,11 @@ function renderEmpty() {
   hint.append("Select text on a page, right-click, and choose ");
   hint.append(el("strong", null, "Fact-check selection"));
   hint.append(".");
-  empty.append(hint);
+  const pageHint = el("p");
+  pageHint.append("To check a loaded article, right-click the page and choose ");
+  pageHint.append(el("strong", null, "Fact-check this page"));
+  pageHint.append(". Hover a highlight for the fast result; click it for deeper analysis.");
+  empty.append(hint, pageHint);
   return empty;
 }
 
