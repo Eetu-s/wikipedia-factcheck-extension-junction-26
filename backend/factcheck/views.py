@@ -7,7 +7,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from .checker import check
+from .checker import CheckerError, check
 
 
 @require_GET
@@ -41,4 +41,8 @@ def factcheck(request):
     if not isinstance(text, str) or not text.strip():
         return JsonResponse({"error": "'text' must be a non-empty string."}, status=400)
 
-    return JsonResponse(asdict(check(text)))
+    try:
+        result = check(text)
+    except CheckerError as e:
+        return JsonResponse({"error": f"Fact check failed: {e}"}, status=502)
+    return JsonResponse(asdict(result))

@@ -11,6 +11,9 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").sp
 # Empty means the endpoint rejects every request.
 FACTCHECK_PASSWORD_HASH = os.environ.get("FACTCHECK_PASSWORD_HASH", "")
 
+# Google Gemini API key, used by factcheck/checker.py to make the fact-check decision.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
