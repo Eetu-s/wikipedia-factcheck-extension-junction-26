@@ -44,6 +44,7 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   await begin();
   const first = await invoke(fast());
   assert.equal(first.result.decision, "SUPPORTED");
+  assert.equal(calls.at(-1).url, "https://backend.example/api/factcheck/", "Page scans use the password endpoint");
   const body = JSON.parse(calls.at(-1).options.body);
   assert.equal(body.fast_only, true);
   assert.equal(body.password, "test-password");
@@ -71,6 +72,8 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   responder = () => response({ decision: "REFUTED", confidence: .8, sources: [], explanation_id: null });
   await context.checkText("A selection remains available.");
   assert.equal(session.job.status, "done");
+  assert.equal(calls.at(-1).url, "https://backend.example/api/factcheck/", "Selections use the password endpoint");
+  assert.equal(JSON.parse(calls.at(-1).options.body).password, "test-password");
   assert.equal(JSON.parse(calls.at(-1).options.body).fast_only, undefined);
 
   // In-flight work from Clear/navigation cannot become the next scan's cached result.
