@@ -2,9 +2,8 @@
  * mutation observers invalidate it but never enqueue newly loaded text. */
 (() => {
   if (globalThis.WikiFactPageScan) return;
-  // Bounded streams keep the pipeline full; each item paints independently of its siblings.
-  const CONCURRENCY = 6;
-  const BATCH_SIZE = 8;
+  // Independent requests refill immediately; no sentence waits for a batch or stream.
+  const CONCURRENCY = 12;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
   let scan = null;
@@ -51,7 +50,8 @@
       }
       current.ui.update(current.sentences, {
         total: current.sentences.length, completed: current.completed, failed: current.failed,
-        stopped: current.stopped, changed: current.changed, error: current.error,
+        stopped: current.stopped, changed: current.changed,
+        error: current.error || (current.failed ? current.failureMessage : ""),
         changedSentences: changed,
       });
       // Verdicts paint immediately. Decorative hops share a small frame budget during bursts.
@@ -86,7 +86,6 @@
     current.animations.clear();
     current.queue.length = 0;
     current.queued.clear();
-    forgetWaiting(current);
     clearTimeout(wakeTimer);
     current.cancelFast = send("WFC_SCAN_CANCEL", { kind: "fast" }, current).catch(() => {});
     for (const sentence of current.sentences) {
@@ -110,7 +109,6 @@
     renderFrame = hoverFrame = priorityFrame = 0;
     if (!old) return;
     old.invalid = true;
-    forgetWaiting(old);
     old.observer?.disconnect();
     clearInterval(old.navigationTimer);
     old.ui.destroy();
@@ -157,12 +155,11 @@
       wakeTimer = setTimeout(() => pump(current), current.cooldown - now);
       return;
     }
-    // A streamed item can paint without walking the rest of the article. The batch's
-    // completion callback refills the queue as soon as a connection becomes available.
+    // A completed sentence paints independently; its callback immediately frees a slot.
     if (current.active >= CONCURRENCY) { refresh(); return; }
     prioritize(current);
     const ready = [], deferred = [];
-    const slots = (CONCURRENCY - current.active) * BATCH_SIZE;
+    const slots = CONCURRENCY - current.active;
     current.queue = current.queue.filter((sentence) => {
       if (sentence.status !== "pending") { current.queued.delete(sentence); return false; }
       if (sentence.retryAt <= now && ready.length < slots) {
@@ -174,18 +171,16 @@
       return true;
     });
     while (ready.length) {
-      const batch = ready.splice(0, BATCH_SIZE);
-      if (!batch.every(valid)) {
+      const sentence = ready.shift();
+      if (!valid(sentence)) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
         return;
       }
-      const versions = batch.map((sentence) => {
-        sentence.status = "running";
-        current.dirty.add(sentence);
-        return ++sentence.version;
-      });
+      sentence.status = "running";
+      current.dirty.add(sentence);
+      const version = ++sentence.version;
       current.active++;
-      fastBatch(current, batch, versions).finally(() => {
+      fastCheck(current, sentence, version).finally(() => {
         current.active--;
         if (live(current)) { refresh(); pump(current); }
       });
@@ -194,48 +189,16 @@
     refresh();
   }
 
-  // Sentences of in-flight batches, by scan id and sentence id, until their answer arrives.
-  const waiting = new Map();
-  const waitingKey = (scanId, sentenceId, requestId) => scanId + "\n" + sentenceId + "\n" + requestId;
-  function forgetWaiting(current) {
-    for (const [key, entry] of waiting) if (entry.current === current) waiting.delete(key);
-  }
-
-  async function fastBatch(current, batch, versions) {
-    const requestId = ++current.nextRequest;
-    const keys = batch.map((sentence, index) => {
-      const key = waitingKey(current.id, sentence.id, requestId);
-      waiting.set(key, { current, sentence, version: versions[index] });
-      return key;
-    });
+  async function fastCheck(current, sentence, version) {
     let response;
     try {
-      // Answers arrive one by one as WFC_FAST_ITEM messages while this request is open.
-      response = await send("WFC_FAST_BATCH", {
-        requestId,
-        items: batch.map((sentence) => ({ sentenceId: sentence.id, text: sentence.text, context: sentence.context })),
+      response = await send("WFC_FAST", {
+        sentenceId: sentence.id, text: sentence.text, context: sentence.context,
       }, current);
     } catch (error) {
       response = { error: error.message };
     }
-    // Whatever didn't get its own answer gets the batch's: stale, an error, or a missing result.
-    for (const key of keys) {
-      const entry = waiting.get(key);
-      if (!entry) continue;
-      waiting.delete(key);
-      applyFast(entry.current, entry.sentence, entry.version,
-        response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." });
-    }
-  }
-
-  // One sentence's answer from a streamed batch: apply and draw it right away.
-  function fastItem(message) {
-    const key = waitingKey(message.scanId, message.sentenceId, message.requestId);
-    const entry = waiting.get(key);
-    if (!entry) return;
-    waiting.delete(key);
-    applyFast(entry.current, entry.sentence, entry.version, message.answer);
-    if (live(entry.current)) { refresh(); pump(entry.current); }
+    applyFast(current, sentence, version, response);
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
@@ -266,12 +229,13 @@
       }
       sentence.result = result;
       sentence.status = "done";
-      current.error = "";
+      if (current.cooldown <= Date.now()) current.error = "";
       current.animations.add(sentence);
     } catch (error) {
       if (!live(current) || sentence.version !== version || current.stopped && sentence.status !== "running") return;
       sentence.status = "failed";
       sentence.error = error.message;
+      current.failureMessage = error.message;
     } finally {
       if (scan === current) refresh(sentence);
     }
@@ -296,6 +260,7 @@
     }
     current.stopped = false;
     current.error = "";
+    current.failureMessage = "";
     pump(current);
   }
 
@@ -381,7 +346,7 @@
       id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""),
       url: location.href, article, style, active: 0,
       cooldown: 0, stopped: false, invalid: false, changed: false, byNode: new WeakMap(),
-      queue: [], queued: new Set(), priorityDirty: true, nextRequest: 0,
+      queue: [], queued: new Set(), priorityDirty: true, failureMessage: "",
       dirty: new Set(), animations: new Set(), completed: 0, failed: 0,
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };
@@ -468,14 +433,8 @@
     if (!event.relatedTarget && event.pointerType !== "touch") dismissSentence();
   });
   document.addEventListener("visibilitychange", () => { if (document.hidden) clear(); });
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "WFC_PAGE_START") { start(); return false; }
-    if (message?.type === "WFC_FAST_ITEM") {
-      fastItem(message);
-      // Answer at once: background.js waits for this before sending the batch's final reply.
-      sendResponse({});
-      return false;
-    }
   });
   globalThis.WikiFactPageScan = { start, clear, stop, retry };
 })();

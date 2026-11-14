@@ -36,14 +36,15 @@ to analyze the chosen sentence.
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
 Its **×** closes the overlay and clears the scan. Navigating or switching away from the
 tab also closes it; leaving the browser window dismisses the sentence popover.
-Up to six streams check eight sentences each (48 in flight), prioritizing visible text
+Up to twelve independent sentence requests run concurrently, prioritizing visible text
 and then nearby content. Each sentence appears on the next animation frame after its
-answer arrives, independently of the other sentences in its request. Highlight ranges
+answer arrives, and its slot is immediately reused for the next sentence. Highlight ranges
 and selector options update incrementally, and decorative hops have a small frame budget
 so bursts of results do not block scrolling.
-Checks use the saved password with `/api/factcheck/batch/`, which bypasses the public API
+Checks use the saved password with `/api/factcheck/`, which bypasses the public API
 and production proxy rate limits. Upstream model-provider rate limits still pause the
-queue with bounded retries.
+queue with bounded retries. Failed checks show their error in the guide as well as the
+sentence result, so a connection or backend failure is visible without opening each result.
 Article/context changes invalidate the snapshot; appended content is checked only after
 an explicit **Rescan**. Clear, navigation, and restarting discard stale responses. Cached
 fast results include the original sentence, location, page, context, tab, and backend and
@@ -84,7 +85,8 @@ unpacked extension after updating its files. Docker startup also applies migrati
 5. Or right-click an article and choose **Fact-check this page**. Hover a highlight for its
    fast result; click it for deeper analysis.
 
-After you edit the code, click the reload icon on the extension's card in `chrome://extensions`.
+After you edit the code, click the reload icon on the extension's card in `chrome://extensions`
+and refresh the article tab before scanning again, so it uses the updated injected scripts.
 
 ## Password
 
@@ -135,15 +137,8 @@ starts deep work; the action is idempotent across repeated requests. Poll
 code points into the saved original sentence and are validated without relocating phrases.
 Polling and cached results never start analysis.
 
-Page scans use `POST /api/factcheck/batch/` with `items` (up to 10 sentence objects) and
-`stream: true`. The response is NDJSON: one `{index, ...answer}` line per finished sentence
-in completion order. Each successful `check_id` is saved before its line is sent, so deep
-analysis is immediately available. Retrieval runs in small parallel groups and feeds model
-decisions as soon as each group is ready. Shared server pools default to four retrieval
-and 32 decision workers per process; set `PAGE_SCAN_RETRIEVAL_WORKERS` and
-`PAGE_SCAN_DECISION_WORKERS` in `backend/.env` to tune these limits for the deployment.
-The nginx batch route disables response buffering. Omitting `stream` retains ordered JSON
-results for other clients.
+Page scans send one `fast_only: true` request per sentence to `/api/factcheck/`. Each JSON
+response is applied independently; no batch endpoint or streaming protocol is required.
 
 Retrieval includes the target and local context. Model inputs separate TARGET SENTENCE,
 PAGE CONTEXT, and WIKIPEDIA EVIDENCE. Context may resolve a subject, pronoun, or relative
@@ -169,6 +164,14 @@ NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/article.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-ui.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-scan.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/scan-animation.test.cjs
+```
+
+The real extension transport regression loads the unpacked extension into an isolated
+profile and checks 38 sentences against a local test backend. Use a Chrome for Testing
+executable via `CHROME_PATH`, or Playwright's installed Chromium:
+
+```bash
+NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/extension.test.cjs
 ```
 
 The browser tests default to Chrome's macOS application path. Set `CHROME_PATH` to your

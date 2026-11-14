@@ -79,9 +79,7 @@ async function callBackend(text) {
   return authenticatedRequest("/api/factcheck/", { text });
 }
 
-// With raw = true, a successful response is returned unread (for streaming); errors are handled
-// the same way either way.
-async function authenticatedRequest(path, body, signal, method = "POST", raw = false) {
+async function authenticatedRequest(path, body, signal, method = "POST") {
   const { password } = await chrome.storage.local.get("password");
   if (!password) throw new Error("Not logged in.");
   const url = (await backendBase()) + path;
@@ -100,7 +98,6 @@ async function authenticatedRequest(path, body, signal, method = "POST", raw = f
     throw new Error("Can't reach the backend at " + url);
   }
 
-  if (raw && response.ok) return response;
   const data = await response.json().catch(() => ({}));
   if (signal?.aborted) throw new Error("Request cancelled or timed out.");
   if (response.status === 401) {
@@ -177,7 +174,6 @@ async function pageMessage(message, sender) {
   }
   const { backendUrl, password } = await chrome.storage.local.get(["backendUrl", "password"]);
   if (!password) return { error: "Log in using the extension's toolbar side panel, then choose Rescan.", status: 401 };
-  if (message.type === "WFC_FAST_BATCH") return pageBatch(message, sender, tabId, scanKey, backendUrl);
   const isFast = message.type === "WFC_FAST";
   if (!isFast && !["WFC_DEEP_START", "WFC_DEEP_POLL"].includes(message.type)) throw new Error("Unknown page request.");
   const key = [tabId, message.scanId, message.sentenceId, isFast ? "fast" : "deep"].join(":");
@@ -205,7 +201,8 @@ async function pageMessage(message, sender) {
     if (controller.signal.aborted || current?.id !== message.scanId || current?.url !== sender.url) return { stale: true };
     if (isFast) {
       // Refuse a legacy server response that may already have launched unsolicited analysis.
-      if (!result.check_id || result.explanation_id) throw new Error("Update the backend to support fast-only page checks.");
+      if (!result.check_id || result.explanation_id || !["SUPPORTED", "REFUTED", "NOT ENOUGH INFO"].includes(result.decision))
+        throw new Error("The backend returned an invalid fast-only result.");
       pageCache.set(cacheKey, { at: Date.now(), result });
       if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
     }
@@ -214,127 +211,6 @@ async function pageMessage(message, sender) {
     clearTimeout(timer);
     if (pageRequests.get(key) === entry) pageRequests.delete(key);
   }
-}
-
-// Fast checks for several sentences in one streamed backend request. Each sentence's answer
-// goes to the page as soon as it arrives, as
-// { type: "WFC_FAST_ITEM", scanId, requestId, sentenceId, answer }, where
-// answer is { result } or { error, status, retryAfter }. The reply itself comes after every item
-// message: {} when the stream is complete, { stale: true }, or a thrown error for the whole request.
-// The page scan applies the reply to any sentence of the batch it hasn't had an answer for.
-let batchCounter = 0;
-// Abort a batch when the backend sends nothing for this long (Chrome may stop a background
-// script whose fetch has no response for about 30 s).
-const BATCH_IDLE_TIMEOUT = 28000;
-
-async function pageBatch(message, sender, tabId, scanKey, backendUrl) {
-  if (!Array.isArray(message.items) || !message.items.length) throw new Error("Empty page batch.");
-  const key = [tabId, message.scanId, "batch", ++batchCounter, "fast"].join(":");
-  const controller = new AbortController();
-  const entry = { controller, tabId, scanId: message.scanId, kind: "fast" };
-  pageRequests.set(key, entry);
-  // Load the durable token once. All subsequent scan, navigation and login changes abort
-  // this entry, so a storage round trip for every result would only delay its first paint.
-  const isCurrent = () => !controller.signal.aborted && pageRequests.get(key) === entry;
-  const cacheKeyOf = (item) =>
-    JSON.stringify([backendUrl, tabId, sender.url, item.sentenceId, item.text, item.context]);
-  const deliveries = [];
-  let deliveryFailed = false;
-  const deliver = (item, answer) => deliveries.push(chrome.tabs.sendMessage(tabId, {
-    type: "WFC_FAST_ITEM", scanId: message.scanId, requestId: message.requestId, sentenceId: item.sentenceId, answer,
-  }, { frameId: 0 }).catch(() => { deliveryFailed = true; }));
-  let timer, reader;
-  const resetTimer = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(), BATCH_IDLE_TIMEOUT);
-  };
-  try {
-    const saved = (await chrome.storage.session.get(scanKey))[scanKey];
-    if (!isCurrent() || saved?.id !== message.scanId || saved?.url !== sender.url) return { stale: true };
-    const misses = [];
-    for (const item of message.items) {
-      const cached = pageCache.get(cacheKeyOf(item));
-      if (cached && Date.now() - cached.at < 15 * 60 * 1000) deliver(item, { result: cached.result });
-      else misses.push(item);
-    }
-    if (!misses.length) {
-      await Promise.all(deliveries);
-      if (deliveryFailed && isCurrent()) throw new Error("A sentence result could not reach this page. Choose Rescan to try again.");
-      return isCurrent() ? {} : { stale: true };
-    }
-    resetTimer();
-    const response = await authenticatedRequest("/api/factcheck/batch/", {
-      items: misses.map((item) => ({ text: item.text, sentence_id: item.sentenceId, context: item.context })),
-      stream: true,
-    }, controller.signal, "POST", true);
-
-    // NDJSON: one {"index", ...answer} line per sentence, in the order the decisions finish.
-    if (!response.body?.getReader) throw new Error("Update the backend to support streamed page checks.");
-    reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const received = new Set();
-    const readLine = (line) => {
-      if (!line.trim() || !isCurrent()) return;
-      let answer;
-      try { answer = JSON.parse(line); } catch { return; }
-      const index = answer?.index;
-      if (!Number.isInteger(index) || index < 0 || index >= misses.length || received.has(index)) return;
-      const item = misses[index];
-      received.add(index);
-      deliver(item, pageAnswer(answer, () => {
-        pageCache.set(cacheKeyOf(item), { at: Date.now(), result: answer });
-        if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
-      }));
-    };
-    for (;;) {
-      let chunk;
-      try {
-        chunk = await reader.read();
-      } catch (e) {
-        throw new Error(controller.signal.aborted ? "Request cancelled or timed out." : "The connection to the backend was lost.");
-      }
-      if (!isCurrent()) return { stale: true };
-      if (chunk.done) {
-        // A valid final line need not end with a newline, and UTF-8 can span chunks.
-        readLine(buffer + decoder.decode());
-        break;
-      }
-      resetTimer();
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) readLine(line);
-      // Every answer is already durable. Don't hold the scan's next request behind
-      // response shutdown or unrelated tail bytes after the last useful result.
-      if (received.size === misses.length) break;
-    }
-    // Every item message must reach the page before this reply does.
-    await Promise.all(deliveries);
-    if (!isCurrent()) return { stale: true };
-    if (deliveryFailed) throw new Error("A sentence result could not reach this page. Choose Rescan to try again.");
-    if (received.size < misses.length) throw new Error("The backend stream ended before every sentence was answered.");
-    return {};
-  } finally {
-    clearTimeout(timer);
-    if (reader) {
-      await reader.cancel().catch(() => {});
-      reader.releaseLock();
-    }
-    if (pageRequests.get(key) === entry) pageRequests.delete(key);
-  }
-}
-
-// One backend batch answer as the page scan expects it. `remember` caches a successful result.
-function pageAnswer(answer, remember) {
-  if (answer.error) {
-    return { error: answer.error, status: answer.status, retryAfter: answer.retry_after ? answer.retry_after * 1000 : undefined };
-  }
-  // Refuse a server response that may already have launched unsolicited analysis.
-  if (!answer.check_id || answer.explanation_id || !["SUPPORTED", "REFUTED", "NOT ENOUGH INFO"].includes(answer.decision))
-    return { error: "The backend returned an invalid fast result." };
-  remember();
-  return { result: answer };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
