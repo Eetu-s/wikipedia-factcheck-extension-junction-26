@@ -61,6 +61,19 @@ services:
     networks:
       - internal
     labels:
+      - traefik.enable=false      # reached through the frontend service
+
+  # The website, and a proxy for /api/ and /admin/ to the backend (web/nginx.conf).
+  frontend:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    expose:
+      - "80"
+    networks:
+      - internal
+    labels:
       - traefik.enable=true
       - traefik.docker.network=wikipedia-factcheck-internal
       - traefik.http.routers.wikipedia-factcheck.rule=Host(`klausde.tech`)
@@ -71,7 +84,7 @@ services:
       - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.average=10
       - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.period=1m
       - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.burst=20
-      - traefik.http.services.wikipedia-factcheck.loadbalancer.server.port=8000
+      - traefik.http.services.wikipedia-factcheck.loadbalancer.server.port=80
 
 volumes:
   backend-data:
