@@ -40,6 +40,12 @@ def accuracy(request):
 
 
 @require_GET
+def accuracy_css(request):
+    """Serve the report stylesheet from the same origin under the frontend's strict CSP."""
+    return render(request, "factcheck/accuracy.css", content_type="text/css")
+
+
+@require_GET
 def health(request):
     return JsonResponse({"status": "ok"})
 

@@ -5,7 +5,7 @@ The extension's fact-check as a web page. Type or paste a claim, press **Fact-ch
 ## Files
 
 - `public/`: the site (`index.html`, `app.js`, `styles.css`, plus `tokens.css` and `base.css`, copies of the extension's theme).
-- `nginx.conf`, `Dockerfile`: nginx serves `public/` and forwards `/api/`, `/admin/` and `/static/` to the backend, so the page and the API share one origin (no CORS).
+- `nginx.conf`, `Dockerfile`: nginx serves `public/` and forwards `/api/`, `/static/`, `/accuracy`, `/accuracy/`, and `/accuracy.css` to the backend, so the pages and API share one origin (no CORS). `/admin` remains hidden.
 
 ## Run it
 

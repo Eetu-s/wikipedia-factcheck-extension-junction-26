@@ -5,69 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A stored evaluation of 100 true and 100 false Finnish-history statements using the Wikipedia Fact Check extension's model.">
   <title>Accuracy · Wikipedia Fact Check</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --color-paper: oklch(96% 0.009 82); --color-paper-2: oklch(92% 0.012 82);
-      --color-paper-3: oklch(87.5% 0.014 80); --color-plate: oklch(99.5% 0.003 82);
-      --color-ink: oklch(16% 0.006 60); --color-muted: oklch(46% 0.01 60);
-      --color-rule: oklch(81% 0.012 80); --color-success: oklch(50% 0.12 150);
-      --color-error: oklch(52% 0.19 27); --color-accent: oklch(53% 0.15 38);
-      --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-    }
-    *, *::before, *::after { box-sizing: border-box; }
-    body { margin: 0; color: var(--color-ink); background: var(--color-paper); font-family: var(--font-body); line-height: 1.55; -webkit-font-smoothing: antialiased; }
-    main { width: min(1600px, 100%); margin: 0 auto; padding: 32px 32px 64px; }
-    header { display: flex; justify-content: space-between; gap: 24px; align-items: center; padding-bottom: 16px; border-bottom: 2px solid var(--color-ink); }
-    .brand { font-weight: 700; letter-spacing: -.025em; }
-    .eyebrow, .meta, .row-number, .count, .figure, .verdict { font-family: var(--font-mono); }
-    .eyebrow, .meta { font-size: 12px; color: var(--color-muted); }
-    .hero { padding: 44px 0 28px; display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 24px; }
-    h1, h2, h3, p { margin: 0; }
-    h1 { font-size: clamp(32px, 4.2vw, 60px); line-height: 1.04; letter-spacing: -.045em; margin: 12px 0 16px; }
-    .intro { max-width: 65ch; color: var(--color-muted); }
-    .run-state { text-align: right; display: grid; gap: 5px; }
-    .status { font-size: 13px; font-weight: 600; }
-    .plate { border: 2px solid var(--color-ink); background: var(--color-plate); box-shadow: 6px 6px 0 var(--color-paper-3); }
-    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 24px; }
-    .metric { padding: 22px 24px; border-right: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); }
-    .metric:nth-child(4n) { border-right: 0; } .metric:nth-last-child(-n+4) { border-bottom: 0; }
-    .metric h2 { font-size: 13px; font-weight: 500; color: var(--color-muted); }
-    .figure { font-size: clamp(26px, 3vw, 40px); font-weight: 600; letter-spacing: -.045em; line-height: 1.25; margin: 8px 0; font-variant-numeric: tabular-nums; }
-    .metric p { font-size: 12px; color: var(--color-muted); }
-    .confusion { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 20px; }
-    .confusion div { padding: 16px 24px; border-right: 1px solid var(--color-rule); }
-    .confusion div:last-child { border: 0; }
-    .count { font-size: 24px; font-weight: 600; margin-right: 8px; font-variant-numeric: tabular-nums; }
-    .confusion span:last-child { font-size: 13px; }
-    .method { font-size: 13px; color: var(--color-muted); max-width: 115ch; margin-bottom: 32px; }
-    .notice { padding: 16px 20px; background: var(--color-paper-2); border-left: 2px solid var(--color-ink); margin-bottom: 24px; font-size: 14px; }
-    .section-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; margin-bottom: 14px; }
-    h2 { font-size: 20px; letter-spacing: -.025em; }
-    .table-wrap { overflow-x: auto; }
-    table { border-collapse: collapse; width: 100%; min-width: 1080px; table-layout: fixed; font-size: 14px; }
-    col.statement { width: 24%; } col.prediction { width: 13%; } col.correction { width: 26%; }
-    th { padding: 16px; text-align: left; font-size: 12px; font-weight: 600; background: var(--color-paper-2); border-bottom: 2px solid var(--color-ink); }
-    td { padding: 20px 16px; vertical-align: top; border-bottom: 1px solid var(--color-rule); overflow-wrap: anywhere; }
-    th + th, td + td { border-left: 1px solid var(--color-rule); }
-    tbody tr:last-child td { border-bottom: 0; }
-    tbody tr:nth-child(even) { background: color-mix(in oklab, var(--color-paper) 35%, var(--color-plate)); }
-    .row-number { display: block; color: var(--color-muted); font-size: 11px; margin-bottom: 8px; }
-    .verdict { display: inline-block; font-size: 10px; font-weight: 600; padding: 5px 7px; border: 1px solid var(--color-rule); background: var(--color-paper-2); white-space: normal; }
-    .verdict[data-decision="SUPPORTED"] { border-color: var(--color-success); color: var(--color-success); background: color-mix(in oklab, var(--color-success) 7%, var(--color-plate)); }
-    .verdict[data-decision="REFUTED"] { border-color: var(--color-error); color: var(--color-error); background: color-mix(in oklab, var(--color-error) 7%, var(--color-plate)); }
-    .evaluation { display: block; font-size: 11px; margin-top: 8px; color: var(--color-muted); }
-    .evaluation.mismatch { color: var(--color-error); font-weight: 600; }
-    .muted { color: var(--color-muted); font-size: 12px; }
-    .correction-entry + .correction-entry { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-rule); }
-    .correction-entry p { font-size: 13px; }
-    .correction-entry a { color: var(--color-accent); font-size: 11px; display: inline-block; margin: 6px 10px 0 0; text-underline-offset: 3px; }
-    .correction-label { display: block; font-size: 10px; color: var(--color-muted); margin-bottom: 5px; }
-    footer { margin-top: 28px; border-top: 2px solid var(--color-ink); padding-top: 16px; display: flex; justify-content: space-between; gap: 20px; }
-    @media (max-width: 850px) { main { padding: 20px 16px 40px; } .hero { grid-template-columns: 1fr; padding-top: 32px; } .run-state { text-align: left; } .metrics { grid-template-columns: repeat(2, 1fr); } .metric { padding: 18px; } .metric:nth-child(2n) { border-right: 0; } .metric:nth-last-child(-n+4) { border-bottom: 1px solid var(--color-rule); } .metric:nth-last-child(-n+2) { border-bottom: 0; } .confusion { grid-template-columns: repeat(2, 1fr); } .confusion div { padding: 14px 18px; } .confusion div:nth-child(2) { border-right: 0; } .confusion div:nth-child(-n+2) { border-bottom: 1px solid var(--color-rule); } footer, .section-heading { flex-direction: column; gap: 8px; } }
-    @media print { main { width: 100%; padding: 0; } .plate { box-shadow: none; } .table-wrap { overflow: visible; } table { min-width: 0; font-size: 9px; } td, th { padding: 8px; } thead { display: table-header-group; } tr { break-inside: avoid; } }
-  </style>
+  <link rel="stylesheet" href="{% url 'accuracy_css' %}">
 </head>
 <body>
 <main>
