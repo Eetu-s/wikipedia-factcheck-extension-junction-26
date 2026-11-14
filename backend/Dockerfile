@@ -20,6 +20,7 @@ COPY --chown=app:app . .
 # The RAG search package, from the "rag" build context (see docker-compose.yml).
 COPY --from=rag --chown=app:app wikirag /rag/wikirag
 ENV PYTHONPATH=/rag
+RUN mkdir -p /data && chown app:app /data
 USER app
 
 EXPOSE 8000
