@@ -7,13 +7,13 @@ and uses the same data: 29,460 *History of Finland* articles in Finnish, Swedish
 ready-made bge-m3 vectors.
 
 The Django backend uses this for `/api/factcheck/` (see `backend/factcheck/checker.py`). Its
-container reaches MariaDB and Ollama through the host's ports 3307 and 11434.
+container reaches MariaDB and Ollama over the compose network (`mariadb:3306`, `ollama:11434`).
 
 ## Setup
 
 ```bash
-docker compose -f rag/docker-compose.yml up -d --wait                  # MariaDB :3307, Ollama :11434
-docker compose -f rag/docker-compose.yml exec ollama ollama pull bge-m3
+docker compose up -d --wait mariadb ollama   # from the repo root: MariaDB :3307, Ollama :11434
+docker compose exec ollama ollama pull bge-m3
 ```
 
 ```bash

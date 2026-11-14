@@ -1,3 +1,6 @@
+# Django backend, plus MariaDB (vector search) and Ollama (embeddings) for the RAG search.
+#   docker compose up --build -d --wait
+#   docker compose exec ollama ollama pull bge-m3
 services:
   backend:
     build:
@@ -12,12 +15,15 @@ services:
         required: false
     environment:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
-      # MariaDB and Ollama from rag/docker-compose.yml (or a native Ollama), via the host's ports.
-      RAG_DB_HOST: host.docker.internal
-      RAG_DB_PORT: "3307"
-      RAG_OLLAMA_URL: http://host.docker.internal:11434
+      # MariaDB and Ollama below, over the compose network.
+      RAG_DB_HOST: mariadb
+      RAG_DB_PORT: "3306"
+      RAG_OLLAMA_URL: http://ollama:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      mariadb:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
@@ -30,3 +36,30 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  mariadb:
+    image: mariadb:lts            # vector search needs MariaDB 11.7 or later
+    environment:
+      MARIADB_ROOT_PASSWORD: wikirag
+      MARIADB_DATABASE: wikirag
+      MARIADB_USER: wikirag
+      MARIADB_PASSWORD: wikirag
+    ports:
+      - "3307:3306"               # 3307 on the host, so it does not collide with a local MariaDB on 3306
+    volumes:
+      - wikirag-db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 30
+
+  ollama:
+    image: ollama/ollama:0.12.6
+    ports:
+      - "11434:11434"
+    volumes:
+      - wikirag-ollama:/root/.ollama
+
+volumes:
+  wikirag-db:
+  wikirag-ollama:
