@@ -1,0 +1,185 @@
+/* Hallmark · shape: app screen · genre: modern-minimal · theme: Terrazzo (deal 2/3, seed browser-side-panel-checks-2b35·6bfd1cdd·2026-11-14·r0) · redesign: full
+ * nav: kept (title, then the screen) · signature: the verdict plate (decision, confidence measure, ruled sources) · states: login, empty, loading, error, done · terrazzo: off-white, 6px offset, system sans
+ * axes: light/geometric-sans/warm · posture: restrained · contrast: pass · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 · weakest: V, Terrazzo's wide Syne is not shipped with the extension so heads fall back to the system sans; kept the theme's ink, rules and offset and let weight and size carry the verdict instead of fetching a font */
+@import url("./tokens.css");
+@import url("./base.css");
+
+/* Panel dials: the theme's offset is sized for a page, not a 360px column. */
+:root {
+  --offset-card: 6px;
+  --shadow-card: var(--offset-card) var(--offset-card) 0 var(--color-paper-3);
+  --font-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-outlier: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --control-h: 40px;
+  --verdict-supported: var(--color-success);
+  --verdict-refuted: var(--color-error);
+  --verdict-unsure: var(--color-muted);
+}
+
+h1, h2, h3 { max-width: none; }
+h1 { font-size: var(--text-xl); line-height: 1.1; }
+h2 { font-size: var(--text-lg); }
+
+.panel {
+  display: grid;
+  gap: var(--space-lg);
+  max-width: 36rem;
+  margin-inline: auto;
+  padding: var(--space-md) var(--space-md) var(--space-lg);
+}
+
+.panel > header { padding-bottom: var(--space-sm); border-bottom: var(--rule-bar) solid var(--color-ink); }
+
+.stack { display: grid; gap: var(--space-md); align-content: start; }
+
+/* ---------- controls ---------- */
+
+label { display: grid; gap: var(--space-2xs); font-size: var(--text-sm); font-weight: 500; }
+
+input {
+  width: 100%;
+  min-height: var(--control-h);
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--rule-hair) solid var(--color-ink);
+  border-radius: var(--radius-card);
+  background: var(--color-plate);
+  color: var(--color-ink);
+  font-size: var(--text-md);
+}
+input::placeholder { color: var(--color-muted); opacity: 1; }
+input:hover { border-color: var(--color-ink-2); background: var(--color-plate); }
+input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.hint { margin: 0; font-size: var(--text-sm); color: var(--color-muted); font-weight: 400; }
+
+button {
+  min-height: var(--control-h);
+  padding: var(--space-xs) var(--space-md);
+  border: var(--rule-bar) solid var(--color-ink);
+  border-radius: var(--radius-pill);
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-size: var(--text-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+button:hover { background: var(--color-ink-2); border-color: var(--color-ink-2); }
+button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+button:active { background: var(--color-ink); border-color: var(--color-ink); transform: translateY(1px); }
+button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+button.quiet { background: transparent; color: var(--color-ink); }
+button.quiet:hover { background: var(--color-paper-2); border-color: var(--color-ink); }
+button.quiet:active { background: var(--color-paper-3); }
+
+@media (pointer: coarse) {
+  :root { --control-h: 48px; }
+}
+
+/* ---------- messages ---------- */
+
+.error { margin: 0; color: var(--color-error); font-size: var(--text-sm); font-weight: 500; }
+.error:empty { display: none; }
+
+/* ---------- empty ---------- */
+
+.empty {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  border: var(--rule-hair) dashed var(--color-muted);
+  background: var(--color-paper-2);
+}
+.empty p { max-width: none; }
+.empty strong { font-weight: 700; }
+
+/* ---------- the verdict plate ---------- */
+
+.plate {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: var(--rule-bar) solid var(--color-ink);
+  background: var(--color-plate);
+  box-shadow: var(--shadow-card);
+}
+
+.claim { display: grid; gap: var(--space-2xs); }
+.claim .label { font-size: var(--text-sm); font-weight: 500; color: var(--color-muted); }
+.claim blockquote {
+  margin: 0;
+  padding-left: var(--space-sm);
+  border-left: var(--rule-bar) solid var(--color-rule);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.verdict {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--rule-hair) solid var(--verdict-color, var(--verdict-unsure));
+  background: color-mix(in oklab, var(--verdict-color, var(--verdict-unsure)) 9%, var(--color-plate));
+}
+[data-decision="SUPPORTED"] { --verdict-color: var(--verdict-supported); }
+[data-decision="REFUTED"] { --verdict-color: var(--verdict-refuted); }
+.verdict .label { font-size: var(--text-sm); font-weight: 500; color: var(--color-muted); }
+.verdict .decision {
+  font-size: var(--text-xl);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: var(--tracking-display);
+  color: var(--verdict-color, var(--color-ink));
+  overflow-wrap: anywhere;
+}
+
+.confidence { display: grid; gap: var(--space-2xs); }
+.confidence .row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); font-size: var(--text-sm); font-weight: 500; }
+.confidence .figure { font-family: var(--font-outlier); font-size: var(--text-lg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.measure { position: relative; height: 8px; background: var(--color-paper-3); overflow: hidden; }
+.measure > span {
+  position: absolute;
+  inset: 0;
+  background: var(--verdict-color, var(--color-ink));
+  transform-origin: left center;
+  transform: scaleX(var(--v, 0));
+}
+
+.sources { display: grid; gap: var(--space-xs); }
+.sources ol { margin: 0; padding: 0; list-style: none; border-top: var(--rule-bar) solid var(--color-ink); }
+.sources li { display: grid; gap: var(--space-3xs); padding: var(--space-sm) 0; border-bottom: var(--rule-hair) solid var(--color-rule); }
+.sources a { font-weight: 500; overflow-wrap: anywhere; text-decoration-color: var(--color-rule); }
+.sources a:hover { text-decoration-color: var(--color-accent); color: var(--color-accent); }
+.sources .host { font-family: var(--font-outlier); font-size: var(--text-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.sources .none { color: var(--color-muted); font-size: var(--text-sm); }
+
+.raw {
+  margin: 0;
+  padding: var(--space-sm);
+  background: var(--color-paper-2);
+  font-family: var(--font-outlier);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- loading: a skeleton in the shape of the plate ---------- */
+
+.skeleton { display: grid; gap: var(--space-sm); }
+.skeleton span { display: block; height: 14px; background: var(--color-paper-3); }
+.skeleton span:nth-child(1) { width: 92%; }
+.skeleton span:nth-child(2) { width: 64%; }
+.skeleton .bar { height: 56px; width: 100%; background: var(--color-paper-2); }
+.status { margin: 0; font-size: var(--text-sm); font-weight: 500; color: var(--color-muted); }
+
+/* ---------- error ---------- */
+
+.plate.failed { border-color: var(--color-error); box-shadow: var(--offset-card) var(--offset-card) 0 color-mix(in oklab, var(--color-error) 18%, var(--color-paper)); }
+.failed .error { font-size: var(--text-md); }
+
+.footer { display: flex; justify-content: flex-start; }

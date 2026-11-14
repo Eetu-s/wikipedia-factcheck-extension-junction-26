@@ -2,31 +2,35 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Select a claim on any page and check it against Wikipedia: a verdict, a confidence and the sources behind it.">
   <title>Wikipedia Fact Check</title>
-  <style>
-    body { font-family: sans-serif; margin: 12px; }
-    pre { white-space: pre-wrap; background: #f3f3f3; padding: 8px; }
-    label { display: block; margin-top: 8px; }
-    input { width: 100%; box-sizing: border-box; }
-    .error { color: #b00020; }
-  </style>
+  <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
-  <h1>Wikipedia Fact Check</h1>
+  <div class="panel">
+    <header>
+      <h1>Wikipedia Fact Check</h1>
+    </header>
 
-  <!-- Shown until a password is saved. -->
-  <form id="login" hidden>
-    <h2>Log in</h2>
-    <p id="loginError" class="error"></p>
-    <label>Backend URL <input id="backendUrl" placeholder="http://localhost:8000"></label>
-    <label>Password <input id="password" type="password" required></label>
-    <p><button type="submit">Log in</button></p>
-  </form>
+    <!-- Shown until a password is saved. -->
+    <form id="login" class="stack" hidden>
+      <h2>Log in</h2>
+      <p id="loginError" class="error" role="alert"></p>
+      <label for="backendUrl">Backend URL
+        <input id="backendUrl" name="backendUrl" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://localhost:8000">
+      </label>
+      <label for="password">Password
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div><button type="submit">Log in</button></div>
+    </form>
 
-  <!-- Shown once logged in. -->
-  <div id="main" hidden>
-    <div id="result">Select text on a page, right-click, and choose <em>Fact-check selection</em>.</div>
-    <p><button id="logout">Log out</button></p>
+    <!-- Shown once logged in. -->
+    <div id="main" class="stack" hidden>
+      <div id="result" class="stack" aria-live="polite"></div>
+      <div class="footer"><button id="logout" type="button" class="quiet">Log out</button></div>
+    </div>
   </div>
 
   <script src="sidepanel.js"></script>

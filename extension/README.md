@@ -7,6 +7,7 @@ A Chrome extension (Manifest V3). Select text on any page, right-click, and choo
 - `manifest.json`: extension config and permissions.
 - `background.js`: adds the right-click menu item and sends `POST /api/factcheck/` to the backend.
 - `sidepanel.html` / `sidepanel.js`: shows the result and the settings (backend URL and password).
+- `sidepanel.css`, `tokens.css`, `base.css`: the side panel's styles. Colours, spacing and type are tokens in `tokens.css`; change a value there, not in `sidepanel.css`. The theme is Hallmark's Terrazzo.
 
 ## Load it
 
