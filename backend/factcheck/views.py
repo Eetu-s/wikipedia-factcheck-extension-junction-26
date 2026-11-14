@@ -4,19 +4,20 @@ import logging
 import os
 import tempfile
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.db import transaction
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from .checker import CheckerError, check, check_many
+from .checker import BATCH_DECISION_WORKERS, CheckerError, check, decide_or_error, retrieve_many
 from .context import normalize_context
 from .explainer import start_explanation, start_page_analysis
 from .models import Explanation, PageCheck
@@ -181,10 +182,13 @@ def factcheck_batch(request):
     """
     Fast checks for several page sentences in one request (the page scan).
 
-    Request:  {"password": str, "items": [{"text": str, "sentence_id": str, "context": {...}}, ...]}
+    Request:  {"password": str, "items": [{"text": str, "sentence_id": str, "context": {...}}, ...],
+               "stream": bool}
     Response: {"results": [...]}, one per item in the same order, each either
       {"sentence_id", "decision", "confidence", "sources", "explanation_id": null, "check_id"}
       or {"sentence_id", "error": str, "status": 429 | 502, "retry_after": int | null}.
+    With "stream": true, the response is NDJSON instead: one {"index": int, ...answer} line per
+    item, in the order the decisions finish.
 
     The password is hashed once per batch, all retrieval queries are embedded in one call, the
     Gemini decisions run in parallel, and the stored checks are written in one transaction.
@@ -216,36 +220,85 @@ def factcheck_batch(request):
             return JsonResponse({"error": f"items[{index}]: {error}"}, status=400)
         items.append((text, sentence_id, context))
 
+    stream = body.get("stream", False)
+    if not isinstance(stream, bool):
+        return JsonResponse({"error": "'stream' must be a boolean."}, status=400)
+
+    # Retrieval (one embedding call, one database connection) runs before any response is sent,
+    # so a failure that affects every sentence still gets a normal 502.
     try:
-        outcomes = check_many([(text, context) for text, _, context in items])
+        article_lists = retrieve_many([(text, context) for text, _, context in items])
     except CheckerError as e:
         logger.warning("Batch page fact check failed: %s", e)
         return JsonResponse({"error": "Fact check is unavailable. Please retry."}, status=502)
 
-    results, rows = [], []
-    for (text, sentence_id, context), outcome in zip(items, outcomes):
-        if isinstance(outcome, CheckerError):
-            if outcome.retry_after is None:
-                logger.warning("Page fact check failed: %s", outcome)
-            results.append({
-                "sentence_id": sentence_id,
-                "error": "Fact check rate limited. Please retry later." if outcome.retry_after is not None
-                else "Fact check is unavailable. Please retry.",
-                "status": 429 if outcome.retry_after is not None else 502,
-                "retry_after": outcome.retry_after,
-            })
-            continue
-        result, source_articles = outcome
-        row = PageCheck(
-            sentence_id=sentence_id, original_text=text, context=context,
-            decision=result.decision, confidence=result.confidence,
-            sources=result.sources, evidence=source_articles,
-        )
-        rows.append(row)
-        results.append({**asdict(result), "check_id": str(row.pk), "sentence_id": sentence_id})
+    if stream:
+        response = StreamingHttpResponse(stream_batch(items, article_lists), content_type="application/x-ndjson")
+        response["Cache-Control"] = "no-store"
+        response["X-Accel-Buffering"] = "no"  # nginx: pass each line on at once, don't buffer.
+        return response
+
+    with ThreadPoolExecutor(max_workers=min(BATCH_DECISION_WORKERS, len(items))) as pool:
+        outcomes = list(pool.map(decide_or_error, [(text, context) for text, _, context in items], article_lists))
+    answers = [batch_answer(item, outcome) for item, outcome in zip(items, outcomes)]
     with transaction.atomic():
-        PageCheck.objects.bulk_create(rows)
-    return JsonResponse({"results": results})
+        PageCheck.objects.bulk_create([row for _, row in answers if row])
+    return JsonResponse({"results": [answer for answer, _ in answers]})
+
+
+def stream_batch(items, article_lists):
+    """NDJSON lines, one per sentence as soon as its Gemini decision finishes: {"index", ...answer}.
+
+    Decisions that finish together are stored in one transaction, before their lines are sent,
+    so a check_id always exists by the time the client can ask for its deeper analysis.
+    """
+    pool = ThreadPoolExecutor(max_workers=min(BATCH_DECISION_WORKERS, len(items)))
+    try:
+        futures = {
+            pool.submit(decide_or_error, (text, context), articles): index
+            for index, ((text, _, context), articles) in enumerate(zip(items, article_lists))
+        }
+        pending = set(futures)
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            finished = []
+            for future in done:
+                index = futures[future]
+                try:
+                    outcome = future.result()
+                except Exception:  # A bug for one sentence must not cut off the others.
+                    logger.exception("Page fact check crashed")
+                    outcome = CheckerError("Internal error.")
+                finished.append((index, *batch_answer(items[index], outcome)))
+            with transaction.atomic():
+                PageCheck.objects.bulk_create([row for _, _, row in finished if row])
+            for index, answer, _ in sorted(finished, key=lambda entry: entry[0]):
+                yield json.dumps({"index": index, **answer}) + "\n"
+    finally:
+        # The client may disconnect mid-stream: don't start decisions nobody will read.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def batch_answer(item, outcome):
+    """One sentence's batch answer, and its unsaved PageCheck row (None for an error)."""
+    text, sentence_id, context = item
+    if isinstance(outcome, CheckerError):
+        if outcome.retry_after is None:
+            logger.warning("Page fact check failed: %s", outcome)
+        return {
+            "sentence_id": sentence_id,
+            "error": "Fact check rate limited. Please retry later." if outcome.retry_after is not None
+            else "Fact check is unavailable. Please retry.",
+            "status": 429 if outcome.retry_after is not None else 502,
+            "retry_after": outcome.retry_after,
+        }, None
+    result, source_articles = outcome
+    row = PageCheck(
+        sentence_id=sentence_id, original_text=text, context=context,
+        decision=result.decision, confidence=result.confidence,
+        sources=result.sources, evidence=source_articles,
+    )
+    return {**asdict(result), "check_id": str(row.pk), "sentence_id": sentence_id}, row
 
 
 def authenticated_password(password):

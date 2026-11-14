@@ -141,19 +141,43 @@
     refresh();
   }
 
+  // Sentences of in-flight batches, by scan id and sentence id, until their answer arrives.
+  const waiting = new Map();
+  const waitingKey = (scanId, sentenceId) => scanId + "\n" + sentenceId;
+
   async function fastBatch(current, batch, versions) {
+    const keys = batch.map((sentence, index) => {
+      const key = waitingKey(current.id, sentence.id);
+      waiting.set(key, { current, sentence, version: versions[index] });
+      return key;
+    });
     let response;
     try {
+      // Answers arrive one by one as WFC_FAST_ITEM messages while this request is open.
       response = await send("WFC_FAST_BATCH", {
         items: batch.map((sentence) => ({ sentenceId: sentence.id, text: sentence.text, context: sentence.context })),
       }, current);
     } catch (error) {
       response = { error: error.message };
     }
-    // A stale scan or a failure of the whole request applies to every sentence in the batch.
-    const answers = Array.isArray(response?.results) && response.results.length === batch.length
-      ? response.results : batch.map(() => response);
-    batch.forEach((sentence, index) => applyFast(current, sentence, versions[index], answers[index]));
+    // Whatever didn't get its own answer gets the batch's: stale, an error, or a missing result.
+    for (const key of keys) {
+      const entry = waiting.get(key);
+      if (!entry) continue;
+      waiting.delete(key);
+      applyFast(entry.current, entry.sentence, entry.version,
+        response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." });
+    }
+  }
+
+  // One sentence's answer from a streamed batch: apply and draw it right away.
+  function fastItem(message) {
+    const key = waitingKey(message.scanId, message.sentenceId);
+    const entry = waiting.get(key);
+    if (!entry) return;
+    waiting.delete(key);
+    applyFast(entry.current, entry.sentence, entry.version, message.answer);
+    if (live(entry.current)) refresh();
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
@@ -367,8 +391,14 @@
     if (!event.relatedTarget && event.pointerType !== "touch") dismissSentence();
   });
   document.addEventListener("visibilitychange", () => { if (document.hidden) clear(); });
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "WFC_PAGE_START") { start(); return false; }
+    if (message?.type === "WFC_FAST_ITEM") {
+      fastItem(message);
+      // Answer at once: background.js waits for this before sending the batch's final reply.
+      sendResponse({});
+      return false;
+    }
   });
   globalThis.WikiFactPageScan = { start, clear, stop, retry };
 })();
