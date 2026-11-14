@@ -17,6 +17,9 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY --chown=app:app . .
+# The RAG search package, from the "rag" build context (see docker-compose.yml).
+COPY --from=rag --chown=app:app wikirag /rag/wikirag
+ENV PYTHONPATH=/rag
 USER app
 
 EXPOSE 8000

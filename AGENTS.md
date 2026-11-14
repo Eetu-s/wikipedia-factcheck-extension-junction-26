@@ -3,15 +3,16 @@
 ## Project layout
 
 - `backend/` — Django project (`config/` settings/urls, `factcheck/` app). API is served under `/api/`.
-- `rag/` — RAG search database (not yet set up; the backend does not depend on it yet).
+- `rag/` — Wikipedia semantic search (`wikirag` package, MariaDB Vector + Ollama). The backend image includes `rag/wikirag` and uses it in `/api/factcheck/`.
 - `extension/` — browser extension frontend.
 - `data/` — local RAG data and indexes. Git-ignored; never commit its contents.
 
 ## Running the backend
 
-With Docker (preferred):
+With Docker (preferred). `/api/factcheck/` also needs the RAG stack running and loaded (see `rag/README.md`) and `GEMINI_API_KEY` in `backend/.env`:
 
 ```bash
+docker compose -f rag/docker-compose.yml up -d --wait   # MariaDB :3307, Ollama :11434
 docker compose up --build                              # http://localhost:8000/api/health/
 docker compose exec backend python manage.py test
 docker compose exec backend python manage.py makemigrations

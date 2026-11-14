@@ -2,6 +2,8 @@ services:
   backend:
     build:
       context: ./backend
+      additional_contexts:
+        rag: ./rag
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
@@ -10,11 +12,18 @@ services:
         required: false
     environment:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      # MariaDB and Ollama from rag/docker-compose.yml (or a native Ollama), via the host's ports.
+      RAG_DB_HOST: host.docker.internal
+      RAG_DB_PORT: "3307"
+      RAG_OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:
       # Live-reload source for development.
       - ./backend:/app
+      - ./rag/wikirag:/rag/wikirag
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/')"]
       interval: 10s

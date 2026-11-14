@@ -7,6 +7,16 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
+# Log level for this project's own code (e.g. "DEBUG" shows RAG search distances).
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG" if DEBUG else "INFO")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {"factcheck": {"handlers": ["console"], "level": LOG_LEVEL}},
+}
+
 # Hash (from django.contrib.auth.hashers.make_password) of the password required by /api/factcheck/.
 # Empty means the endpoint rejects every request.
 FACTCHECK_PASSWORD_HASH = os.environ.get("FACTCHECK_PASSWORD_HASH", "")
