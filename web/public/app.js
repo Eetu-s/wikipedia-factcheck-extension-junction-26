@@ -138,8 +138,9 @@ function el(tag, className, text) {
   return node;
 }
 
-// "NOT ENOUGH INFO" -> "Not enough info"
+// "NOT ENOUGH INFO" -> "Can't be confirmed from Wikipedia", "SUPPORTED" -> "Supported"
 function decisionLabel(decision) {
+  if (decision === "NOT ENOUGH INFO") return "Can't be confirmed from Wikipedia";
   const words = String(decision).toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
@@ -264,7 +265,8 @@ function renderDone(job) {
   if (job.explanation) plate.append(renderExplanation(result.decision, job.explanation));
 
   const sources = el("div", "sources");
-  sources.append(el("h2", null, "Sources"));
+  // Without a verdict the links aren't evidence, just the articles the model read.
+  sources.append(el("h2", null, result.decision === "NOT ENOUGH INFO" ? "Articles checked" : "Sources"));
   const list = Array.isArray(result.sources) ? result.sources : [];
   if (list.length === 0) {
     sources.append(el("p", "none", "No sources were returned."));

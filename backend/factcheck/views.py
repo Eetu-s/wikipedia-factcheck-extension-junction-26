@@ -57,7 +57,7 @@ def factcheck(request):
     Request:  {"text": str, "password": str}
     Response: {"decision": "SUPPORTED" | "REFUTED" | "NOT ENOUGH INFO",
                "confidence": float (0.0–1.0),
-               "sources": [str, ...],  # source URLs
+               "sources": [str, ...],  # source URLs; for NOT ENOUGH INFO, all articles checked
                "explanation_id": str | null}  # null for NOT ENOUGH INFO
 
     The explanation is written in the background; fetch it from
