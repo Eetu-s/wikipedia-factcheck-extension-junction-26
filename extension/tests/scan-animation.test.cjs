@@ -133,10 +133,15 @@ const { chromium } = require("playwright-core");
     await page.evaluate(() => hops[0].finish());
     await expectClean();
 
-    // An offscreen result and UI/deeper-analysis refreshes do not replay a completed hop.
+    // Complete a neighboring request without motion so the gentle scheduler can dispatch Oslo.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await finish("Helsinki");
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.waitForFunction(() => mock.requests.some(item => item.message.text.includes("Oslo")));
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    // An offscreen result and UI/deeper-analysis refreshes do not replay a completed hop.
     await finish("Oslo");
-    await page.waitForFunction(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow")) === 2);
+    await page.waitForFunction(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow")) === 3);
     await page.locator("[data-wfc-ui] select").selectOption(await page.evaluate(() => mock.requests.find(item => item.message.text.includes("Eiffel Tower")).message.sentenceId));
     await page.getByRole("button", { name: "Open result", exact: true }).click();
     await page.waitForFunction(() => mock.deepStarts === 1);

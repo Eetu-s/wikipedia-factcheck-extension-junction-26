@@ -139,6 +139,39 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   await rejected;
   assert.equal((await invoke(fast())).stale, true);
 
+  // Real gateway HTML and transport failures must survive the runtime reply as retryable.
+  await begin("recovery");
+  const throughRuntime = (paragraph) => new Promise(resolve => {
+    chrome.runtime.onMessage.listeners[0](fast({ paragraph }, "recovery"),
+      { tab: { id: 1 }, frameId: 0, url: "https://article.example/story" }, resolve);
+  });
+  for (const status of [502, 503, 504]) {
+    responder = () => ({ ...response(null, status, null), async json() { throw new SyntaxError("HTML gateway response"); } });
+    const reply = await throughRuntime("gateway " + status);
+    assert.equal(reply.status, status);
+    assert.equal(reply.retryable, true, "temporary gateway failures can back off instead of failing every sentence");
+    assert.equal(reply.retryAfter, undefined, "a missing Retry-After leaves exponential backoff to the scanner");
+  }
+  responder = () => { throw new Error("network unavailable"); };
+  const disconnected = await throughRuntime("disconnected");
+  assert.equal(disconnected.retryable, true);
+  assert.match(disconnected.error, /Can't reach the backend/);
+  const timeoutController = new AbortController();
+  responder = (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
+  const timedOut = context.authenticatedRequest("/api/factcheck/", { text: "A timed-out check." }, timeoutController.signal);
+  const timeoutRejected = assert.rejects(timedOut, error => error.retryable === true && /timed out/.test(error.message));
+  await waitFor(() => calls.at(-1).options.signal === timeoutController.signal);
+  timeoutController.abort();
+  await timeoutRejected;
+  for (const status of [400, 502]) {
+    responder = () => response({ error: "A structured API failure" }, status, null);
+    const reply = await throughRuntime("API " + status);
+    assert.equal(reply.retryable, false, "API validation/provider errors are not mistaken for proxy outages");
+    assert.equal(reply.error, "A structured API failure");
+  }
+
   // Auth/rate-limit failures remain structured so the page queue can stop/back off.
   await begin("fresh");
   responder = () => response({ error: "Too many requests" }, 429, "3");
@@ -163,5 +196,5 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   assert.equal(local.password, "new-password");
   await chrome.tabs.onRemoved.listeners[0](2);
   assert.equal(session["pageScan:2"], undefined);
-  console.log("Background passed: independent parallel JSON checks, out-of-order results, cancellation, fresh rescan, selection compatibility, context cache, tab isolation, authenticated deep, 401/429.");
+  console.log("Background passed: gateway/network recovery metadata, independent JSON checks, out-of-order results, cancellation, fresh rescan, selection compatibility, context cache, tab isolation, authenticated deep, 401/429.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

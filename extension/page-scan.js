@@ -3,7 +3,8 @@
 (() => {
   if (globalThis.WikiFactPageScan) return;
   // Independent requests refill immediately; no sentence waits for a batch or stream.
-  const CONCURRENCY = 12;
+  const INITIAL_CONCURRENCY = 2;
+  const MAX_CONCURRENCY = 4;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
   let scan = null;
@@ -156,10 +157,10 @@
       return;
     }
     // A completed sentence paints independently; its callback immediately frees a slot.
-    if (current.active >= CONCURRENCY) { refresh(); return; }
+    if (current.active >= current.concurrency) { refresh(); return; }
     prioritize(current);
     const ready = [], deferred = [];
-    const slots = CONCURRENCY - current.active;
+    const slots = current.concurrency - current.active;
     current.queue = current.queue.filter((sentence) => {
       if (sentence.status !== "pending") { current.queued.delete(sentence); return false; }
       if (sentence.retryAt <= now && ready.length < slots) {
@@ -190,24 +191,44 @@
   }
 
   async function fastCheck(current, sentence, version) {
+    const startedAt = performance.now();
     let response;
     try {
       response = await send("WFC_FAST", {
         sentenceId: sentence.id, text: sentence.text, context: sentence.context,
       }, current);
     } catch (error) {
-      response = { error: error.message };
+      response = { error: error.message, retryable: true };
     }
-    applyFast(current, sentence, version, response);
+    applyFast(current, sentence, version, response, performance.now() - startedAt);
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
-  function applyFast(current, sentence, version, response) {
+  function applyFast(current, sentence, version, response, duration) {
     try {
       if (!live(current) || current.stopped || sentence.status !== "running" || sentence.version !== version) return;
       if (!valid(sentence)) return invalidate(current, "Article text changed. Choose Rescan.");
       if (response?.stale) return invalidate(current, "The page changed. Choose Rescan.");
       if (response?.error) {
+        if (response.retryable) {
+          current.concurrency = Math.max(INITIAL_CONCURRENCY, Math.floor(current.concurrency / 2));
+          current.healthy = 0;
+          if (sentence.attempts++ < MAX_RETRIES) {
+            const delay = Math.max(response.retryAfter || 0, Math.min(15000, 1000 * 2 ** (sentence.attempts - 1)));
+            current.cooldown = Math.max(current.cooldown, Date.now() + delay);
+            sentence.status = "pending";
+            sentence.retryAt = current.cooldown;
+            enqueue(current, sentence);
+            current.error = response.error + " Retrying with fewer checks…";
+          } else {
+            // Preserve completed results and leave the untouched queue available for Retry.
+            sentence.status = "failed";
+            sentence.error = current.failureMessage = response.error;
+            current.error = response.error + " Scan paused. Choose Retry failed.";
+            stop(current);
+          }
+          return;
+        }
         if (response.status === 429 && sentence.attempts++ < MAX_RETRIES) {
           current.cooldown = Math.max(current.cooldown,
             Date.now() + Math.max(1000, response.retryAfter || 2000 * 2 ** sentence.attempts));
@@ -229,6 +250,16 @@
       }
       sentence.result = result;
       sentence.status = "done";
+      // Grow only after sustained quick answers; slow backends keep the smaller window.
+      if (duration < 5000) {
+        if (++current.healthy >= 2) {
+          current.concurrency = Math.min(MAX_CONCURRENCY, current.concurrency + 1);
+          current.healthy = 0;
+        }
+      } else {
+        current.healthy = 0;
+        if (duration > 12000) current.concurrency = Math.max(INITIAL_CONCURRENCY, current.concurrency - 1);
+      }
       if (current.cooldown <= Date.now()) current.error = "";
       current.animations.add(sentence);
     } catch (error) {
@@ -261,6 +292,9 @@
     current.stopped = false;
     current.error = "";
     current.failureMessage = "";
+    current.cooldown = 0;
+    current.concurrency = INITIAL_CONCURRENCY;
+    current.healthy = 0;
     pump(current);
   }
 
@@ -347,6 +381,7 @@
       url: location.href, article, style, active: 0,
       cooldown: 0, stopped: false, invalid: false, changed: false, byNode: new WeakMap(),
       queue: [], queued: new Set(), priorityDirty: true, failureMessage: "",
+      concurrency: INITIAL_CONCURRENCY, healthy: 0,
       dirty: new Set(), animations: new Set(), completed: 0, failed: 0,
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };

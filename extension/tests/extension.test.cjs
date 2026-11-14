@@ -11,15 +11,17 @@ const { chromium } = require("playwright-core");
   const extension = path.resolve(__dirname, "..");
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "wfc-extension-test-"));
   const requests = [], timers = new Set();
+  const successful = new Set();
   let context, releaseFirst;
-  let active = 0, peakActive = 0;
+  let active = 0, peakActive = 0, gatewayFailures = 0;
   const server = http.createServer(async (request, response) => {
     if (request.method === "POST") {
       let text = "";
       for await (const chunk of request) text += chunk;
       const item = JSON.parse(text);
       const index = Number(item.text?.match(/^Tower (\d+) /)?.[1]);
-      requests.push({ path: request.url, index, fastOnly: item.fast_only });
+      const call = { path: request.url, index, fastOnly: item.fast_only, status: null };
+      requests.push(call);
       active++;
       peakActive = Math.max(peakActive, active);
       response.once("close", () => active--);
@@ -28,7 +30,18 @@ const { chromium } = require("playwright-core");
         response.end(JSON.stringify({ error: "Expected one fast-only sentence JSON request." }));
         return;
       }
+      // A gateway commonly answers with HTML, rather than the API's structured JSON.
+      // These two failures must be retried without draining the article into failed states.
+      if (gatewayFailures < 2) {
+        gatewayFailures++;
+        call.status = 502;
+        response.writeHead(502, { "Content-Type": "text/html" });
+        response.end("<!doctype html><title>502 Bad Gateway</title><h1>Bad Gateway</h1>");
+        return;
+      }
       const answer = () => {
+        call.status = 200;
+        successful.add(index);
         response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         response.end(JSON.stringify({
           sentence_id: item.sentence_id, decision: "SUPPORTED", confidence: .9, sources: [], explanation_id: null,
@@ -69,7 +82,8 @@ const { chromium } = require("playwright-core");
       await startPageScan(tab.id);
     }, base + "/story");
 
-    // Every other answer must be usable while the first request is still deliberately blocked.
+    // After recovering from the gateway errors, every other answer must be usable
+    // while the first sentence's retried request is still deliberately blocked.
     await page.waitForFunction(() => {
       const shadow = document.querySelector("[data-wfc-ui]")?.shadowRoot;
       const options = [...shadow?.querySelectorAll("option") || []];
@@ -77,11 +91,14 @@ const { chromium } = require("playwright-core");
         options.filter(option => option.textContent.includes("Supported")).length === 37 &&
         options.some(option => option.textContent.includes("Checking") && option.textContent.includes("Tower 0 "));
     }, null, { timeout: 15000 });
-    assert.equal(requests.length, 38, "a slow first sentence cannot prevent the queue from refilling");
-    assert.ok(peakActive >= 2 && peakActive <= 12, "real network requests run concurrently within the scan limit");
+    assert.equal(gatewayFailures, 2, "the real extension recovers from both HTML gateway errors");
+    assert.equal(requests.length, 40, "the failed checks retry without blocking the rest of the article");
+    assert.equal(successful.size, 37, "all later sentences finish before the held first retry");
+    assert.equal(successful.has(0), false);
+    assert.ok(peakActive >= 2 && peakActive <= 4, "real requests stay within the adaptive concurrency limit");
     assert.ok(requests.every(item => item.path === "/api/factcheck/" && item.fastOnly),
       "all sentences use independent fast-only JSON requests");
-    assert.equal(new Set(requests.map(item => item.index)).size, 38, "every sentence is checked exactly once");
+    assert.equal(new Set(requests.map(item => item.index)).size, 38, "retries preserve every article sentence");
     assert.equal(typeof releaseFirst, "function");
     releaseFirst();
     releaseFirst = null;
@@ -97,7 +114,8 @@ const { chromium } = require("playwright-core");
       };
     });
     assert.deepEqual(final, { supported: 38, failed: 0, width: "100%" });
-    console.log("Extension integration passed: real Chrome messaging, 38 independent JSON checks, all 37 later results before the blocked first, bounded concurrency, zero failures, colored progress bar.");
+    assert.equal(requests.filter(item => item.status === 200).length, 38);
+    console.log("Extension integration passed: real Chrome messaging, automatic recovery from two HTML 502 errors, all 37 later results before the blocked first retry, bounded concurrency, 38 supported / zero failed, colored progress bar.");
   } finally {
     for (const timer of timers) clearTimeout(timer);
     releaseFirst?.();

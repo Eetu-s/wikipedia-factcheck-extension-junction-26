@@ -80,6 +80,7 @@ async function callBackend(text) {
 }
 
 async function authenticatedRequest(path, body, signal, method = "POST") {
+  const unavailable = message => Object.assign(new Error(message), { retryable: true });
   const { password } = await chrome.storage.local.get("password");
   if (!password) throw new Error("Not logged in.");
   const url = (await backendBase()) + path;
@@ -94,12 +95,12 @@ async function authenticatedRequest(path, body, signal, method = "POST") {
       ...(method === "GET" ? {} : { body: JSON.stringify({ ...body, password }) }),
     });
   } catch (e) {
-    if (signal?.aborted) throw new Error("Request cancelled or timed out.");
-    throw new Error("Can't reach the backend at " + url);
+    if (signal?.aborted) throw unavailable("Request cancelled or timed out.");
+    throw unavailable("Can't reach the backend at " + url);
   }
 
   const data = await response.json().catch(() => ({}));
-  if (signal?.aborted) throw new Error("Request cancelled or timed out.");
+  if (signal?.aborted) throw unavailable("Request cancelled or timed out.");
   if (response.status === 401) {
     // Forget the bad password; the side panel then shows the login form again.
     const current = await chrome.storage.local.get("password");
@@ -111,8 +112,12 @@ async function authenticatedRequest(path, body, signal, method = "POST") {
   if (!response.ok) {
     const error = new Error(data.error || "Backend error (HTTP " + response.status + ")");
     error.status = response.status;
+    // A gateway HTML response is transient; a structured API error keeps its own meaning.
+    error.retryable = [502, 503, 504].includes(response.status) && !data.error;
     const retry = response.headers.get("Retry-After");
-    error.retryAfter = Math.max(1000, Math.min(300000, Number(retry) * 1000 || Date.parse(retry) - Date.now() || 2000));
+    if (retry || response.status === 429) {
+      error.retryAfter = Math.max(1000, Math.min(300000, Number(retry) * 1000 || Date.parse(retry) - Date.now() || 2000));
+    }
     throw error;
   }
   return data;
@@ -216,7 +221,7 @@ async function pageMessage(message, sender) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type?.startsWith("WFC_") || message.type === "WFC_PAGE_START") return;
   pageMessage(message, sender).then(sendResponse, (error) => sendResponse({
-    error: error.message, status: error.status, retryAfter: error.retryAfter,
+    error: error.message, status: error.status, retryAfter: error.retryAfter, retryable: error.retryable,
   }));
   return true;
 });
