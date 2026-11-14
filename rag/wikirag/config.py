@@ -1,7 +1,7 @@
 """Settings, read from the environment (or rag/.env).
 
 Prefixed with RAG_ so they never collide with the Django backend's own settings.
-The defaults match rag/docker-compose.yml.
+The defaults match docker-compose.yml.
 """
 import os
 from pathlib import Path
