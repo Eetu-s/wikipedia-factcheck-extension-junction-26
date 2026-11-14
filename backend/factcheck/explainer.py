@@ -1,6 +1,6 @@
-"""Explanations: which paragraphs of the source articles give the verdict.
+"""Background explanations and factual corrections, fetched after the fast verdict.
 
-The verdict is returned to the client right away. The explanation needs one LLM call, which runs
+The verdict is returned to the client right away. Deeper analysis runs
 in a background thread and stores its answer in an Explanation row. The client then fetches it
 from /api/factcheck/explanation/<id>/.
 """
@@ -61,7 +61,8 @@ class ExplainerError(Exception):
 def start_explanation(claim: str, decision: Decision, articles: list[dict]) -> str | None:
     """Start explaining the verdict in the background. Returns the explanation id, or None.
 
-    `articles` are the verdict's sources: [{"title", "url", "text"}, ...].
+    `articles` are the initial Wikipedia candidates for refuted claims, or selected sources
+    for supported claims: [{"title", "url", "text"}, ...].
     NOT ENOUGH INFO has nothing to explain, so it gets no explanation.
     """
     if decision == Decision.NOT_ENOUGH_INFO or not articles:
@@ -77,9 +78,19 @@ def start_explanation(claim: str, decision: Decision, articles: list[dict]) -> s
 def _run(explanation_id, claim, decision, articles):
     close_old_connections()
     try:
-        paragraphs = ask_llm(claim, decision, articles)
+        analysis = {}
+        if decision == Decision.REFUTED:
+            from .analysis import analyze_errors
+
+            analysis = analyze_errors(claim, articles)
+            paragraphs = [
+                {"source": evidence["source"], "paragraph": evidence["quote"]}
+                for error in analysis["errors"] for evidence in error["evidence"]
+            ]
+        else:
+            paragraphs = ask_llm(claim, decision, articles)
         Explanation.objects.filter(pk=explanation_id).update(
-            status=Explanation.Status.DONE, paragraphs=paragraphs
+            status=Explanation.Status.DONE, paragraphs=paragraphs, analysis=analysis
         )
     except Exception as e:  # The thread must always leave the row finished, never pending.
         logger.exception("Explanation %s failed", explanation_id)
@@ -92,19 +103,36 @@ def _run(explanation_id, claim, decision, articles):
 
 def ask_llm(claim: str, decision: Decision, articles: list[dict]) -> list[dict]:
     """One Gemini call. Returns [{"source": url, "paragraph": text}, ...] in article order."""
-    if not settings.GEMINI_API_KEY:
-        raise ExplainerError("GEMINI_API_KEY is not set on the backend.")
-
     numbered = "\n\n".join(
         f"[Article {i}] {a['title']} ({a['url']})\n{a['text']}" for i, a in enumerate(articles, 1)
     )
+    answer = generate_json(
+        PROMPT.format(claim=claim, verdict=decision.value, articles=numbered), RESPONSE_SCHEMA
+    ).get("paragraphs")
+    if not isinstance(answer, list):
+        raise ExplainerError("Gemini's answer was not in the expected format.")
+    by_number = {}
+    for item in answer:
+        if not isinstance(item, dict):
+            continue
+        number, paragraph = item.get("article"), str(item.get("paragraph", "")).strip()
+        if type(number) is int and 1 <= number <= len(articles) and paragraph:
+            by_number.setdefault(number, []).append(paragraph)
+    return [
+        {"source": articles[n - 1]["url"], "paragraph": "\n\n".join(by_number[n])}
+        for n in sorted(by_number)
+    ]
+
+
+def generate_json(prompt: str, schema: dict, timeout: float = 60) -> dict:
+    """Structured text generation shared by supported explanations and deeper analysis."""
+    if not settings.GEMINI_API_KEY:
+        raise ExplainerError("GEMINI_API_KEY is not set on the backend.")
     body = {
-        "contents": [
-            {"parts": [{"text": PROMPT.format(claim=claim, verdict=decision.value, articles=numbered)}]}
-        ],
+        "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "responseSchema": RESPONSE_SCHEMA,
+            "responseSchema": schema,
         },
     }
     request = urllib.request.Request(
@@ -113,7 +141,7 @@ def ask_llm(claim: str, decision: Decision, articles: list[dict]) -> list[dict]:
         headers={"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY},
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as e:
         raise ExplainerError(f"Gemini returned HTTP {e.code}: {e.read().decode(errors='replace')}") from e
@@ -122,16 +150,9 @@ def ask_llm(claim: str, decision: Decision, articles: list[dict]) -> list[dict]:
 
     try:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
-        answer = json.loads(text)["paragraphs"]
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
+        answer = json.loads(text)
+        if not isinstance(answer, dict):
+            raise ValueError("Expected an object.")
+        return answer
+    except (KeyError, IndexError, TypeError, ValueError) as e:
         raise ExplainerError("Gemini's answer was not in the expected format.") from e
-
-    by_number = {}
-    for item in answer:
-        number, paragraph = item.get("article"), str(item.get("paragraph", "")).strip()
-        if isinstance(number, int) and 1 <= number <= len(articles) and paragraph:
-            by_number.setdefault(number, []).append(paragraph)
-    return [
-        {"source": articles[n - 1]["url"], "paragraph": "\n\n".join(by_number[n])}
-        for n in sorted(by_number)
-    ]

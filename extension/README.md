@@ -2,6 +2,17 @@
 
 A Chrome extension (Manifest V3). Select text on any page, right-click, and choose **Fact-check selection**. The text is sent to the backend and the answer is shown in the side panel.
 
+The fast verdict appears first. For refuted selections, **Why it's refuted** shows a loading
+message while deeper analysis checks each factual assertion against the local Wikipedia
+dataset. It then highlights incorrect phrases and shows numbered explanations, corrected
+sentences, and short Wikipedia quotations with article links. Facts without enough evidence
+are listed separately; failed or timed-out searches are marked as incomplete.
+
+The fast verdict uses `gemini-decision-1`. Deeper analysis uses `GEMINI_EXPLAIN_MODEL`
+(`gemini-3.5-flash-lite` by default). Apply backend migrations when updating an existing
+installation (`docker compose exec backend python manage.py migrate`), and reload the
+unpacked extension after updating its files. Docker startup also applies migrations.
+
 ## Files
 
 - `manifest.json`: extension config and permissions.

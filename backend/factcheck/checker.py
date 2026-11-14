@@ -66,14 +66,18 @@ CHOICE_TO_DECISION = {
 
 
 def check(text: str) -> tuple[FactCheckResult, list[dict]]:
-    """The verdict, and the source articles behind it ([{"title", "url", "text"}, ...])."""
+    """The verdict and its explanation articles ([{"title", "url", "text"}, ...])."""
     articles = search_wikipedia(text)
     answers = ask_gemini(text, articles)
     verdict = answers["verdict"]
     decision = CHOICE_TO_DECISION[verdict["choice"]]
     sources = pick_sources(decision, articles, answers)
     result = FactCheckResult(decision=decision, confidence=verdict["confidence"], sources=sources)
-    return result, [a for a in articles if a["url"] in sources]
+    # A refuted selection can contain several independent errors. Let the deeper analysis
+    # see every candidate, while preserving the supported explanation's source filtering.
+    return result, articles if decision == Decision.REFUTED else [
+        a for a in articles if a["url"] in sources
+    ]
 
 
 def search_wikipedia(claim: str) -> list[dict]:
