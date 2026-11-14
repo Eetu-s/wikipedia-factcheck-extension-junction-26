@@ -99,8 +99,8 @@ def statistics(rows):
     latencies = [sample["latency_ms"] for sample in completed if "latency_ms" in sample]
     confidences = [sample["confidence"] for sample in completed if "confidence" in sample]
     metrics = [
-        {"label": "Accuracy", "value": percent(tp + tn, attempted),
-         "detail": f"{tp + tn} of {attempted} correct"},
+        {"label": "Accuracy (verdicts only)", "value": percent(tp + tn, decided),
+         "detail": f"{tp + tn} of {decided} correct"},
         {"label": "Coverage", "value": percent(decided, attempted),
          "detail": f"Gave a verdict on {decided} of {attempted}"},
         {"label": "Precision", "value": percent(tp, tp + fp), "detail": "TP / (TP + FP)"},
@@ -118,5 +118,4 @@ def statistics(rows):
             "failed": sum(sample["status"] == "error" for sample in samples),
             "correction_failures": sum(sample["analysis_status"] == "error" for sample in samples),
             "interrupted": sum(sample["status"] == "started" for sample in samples),
-            "pending": 200 - attempted,
-            "decisive_accuracy": percent(tp + tn, decided)}
+            "pending": 200 - attempted}
