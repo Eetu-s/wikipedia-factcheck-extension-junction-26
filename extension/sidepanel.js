@@ -10,6 +10,8 @@ const backendUrlInput = document.getElementById("backendUrl");
 const passwordInput = document.getElementById("password");
 const resultEl = document.getElementById("result");
 
+const DEFAULT_BACKEND_URL = "http://localhost:8000";
+
 // --- Login / logout ---
 
 async function showLoginOrMain() {
@@ -21,12 +23,40 @@ async function showLoginOrMain() {
   passwordInput.value = ""; // never put the saved password back into the page
 }
 
+const loginError = document.getElementById("loginError");
+
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await chrome.storage.local.set({
-    backendUrl: backendUrlInput.value.trim(),
-    password: passwordInput.value.trim(),
-  });
+  const backendUrl = backendUrlInput.value.trim();
+  const password = passwordInput.value.trim();
+  await chrome.storage.session.remove("job"); // drop the previous result/error
+
+  // Check the password before saving it. The backend checks the password before the text,
+  // so an empty text gives 401 for a wrong password and 400 for a correct one.
+  // Same https rule as background.js: don't send the password over plain http (except localhost).
+  const url = (backendUrl || DEFAULT_BACKEND_URL).replace(/\/$/, "") + "/api/factcheck/";
+  let status;
+  try {
+    const { protocol, hostname } = new URL(url);
+    if (protocol !== "https:" && hostname !== "localhost" && hostname !== "127.0.0.1") {
+      throw new Error("not https");
+    }
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "", password }),
+    });
+    status = response.status;
+  } catch (e) {
+    loginError.textContent = "Can't use the backend at " + url + " (use https:// unless it is localhost).";
+    return;
+  }
+  if (status === 401) {
+    loginError.textContent = "Wrong password. Please try again.";
+    passwordInput.value = "";
+    return;
+  }
+  await chrome.storage.local.set({ backendUrl, password });
 });
 
 document.getElementById("logout").addEventListener("click", () => {
@@ -36,10 +66,10 @@ document.getElementById("logout").addEventListener("click", () => {
 // --- Result ---
 
 function showJob(job) {
-  if (!job) return;
   // Also show errors (e.g. "Wrong password") above the login form.
-  document.getElementById("loginError").textContent = job.status === "error" ? job.error : "";
+  loginError.textContent = job?.status === "error" ? job.error : "";
   resultEl.replaceChildren();
+  if (!job) return; // job was cleared
 
   const quote = document.createElement("blockquote");
   quote.textContent = job.text;
