@@ -5,4 +5,5 @@ from . import views
 urlpatterns = [
     path("health/", views.health, name="health"),
     path("factcheck/", views.factcheck, name="factcheck"),
+    path("factcheck/explanation/<uuid:explanation_id>/", views.explanation, name="explanation"),
 ]

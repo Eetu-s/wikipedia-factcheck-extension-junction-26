@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import asdict
 
 from django.conf import settings
@@ -8,6 +9,13 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from .checker import CheckerError, check
+from .explainer import start_explanation
+from .models import Explanation
+
+# How long GET /api/factcheck/explanation/<id>/ waits for the explanation before answering
+# "pending". Under 30 s, because Chrome can stop an extension's background script while a
+# fetch takes longer than that.
+EXPLANATION_WAIT_SECONDS = 25
 
 
 @require_GET
@@ -22,7 +30,11 @@ def factcheck(request):
     Request:  {"text": str, "password": str}
     Response: {"decision": "SUPPORTED" | "REFUTED" | "NOT ENOUGH INFO",
                "confidence": float (0.0–1.0),
-               "sources": [str, ...]}  # source URLs
+               "sources": [str, ...],  # source URLs
+               "explanation_id": str | null}  # null for NOT ENOUGH INFO
+
+    The explanation is written in the background; fetch it from
+    GET /api/factcheck/explanation/<explanation_id>/.
     """
     try:
         body = json.loads(request.body)
@@ -42,7 +54,31 @@ def factcheck(request):
         return JsonResponse({"error": "'text' must be a non-empty string."}, status=400)
 
     try:
-        result = check(text)
+        result, source_articles = check(text)
     except CheckerError as e:
         return JsonResponse({"error": f"Fact check failed: {e}"}, status=502)
+    result.explanation_id = start_explanation(text, result.decision, source_articles)
     return JsonResponse(asdict(result))
+
+
+@require_GET
+def explanation(request, explanation_id):
+    """
+    Waits up to EXPLANATION_WAIT_SECONDS for the explanation, then returns one of:
+      {"status": "done", "paragraphs": [{"source": str, "paragraph": str}, ...]}
+      {"status": "pending"}                   # not ready yet: ask again
+      {"status": "error", "error": str}
+    The id is a random UUID that only the client who ran the check has, so no password is needed.
+    """
+    deadline = time.monotonic() + EXPLANATION_WAIT_SECONDS
+    while True:
+        row = Explanation.objects.filter(pk=explanation_id).first()
+        if row is None:
+            return JsonResponse({"error": "Unknown explanation id."}, status=404)
+        if row.status == Explanation.Status.DONE:
+            return JsonResponse({"status": row.status, "paragraphs": row.paragraphs})
+        if row.status == Explanation.Status.ERROR:
+            return JsonResponse({"status": row.status, "error": row.error})
+        if time.monotonic() >= deadline:
+            return JsonResponse({"status": row.status})
+        time.sleep(0.5)

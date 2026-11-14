@@ -31,6 +31,8 @@ FACTCHECK_PASSWORD_HASH = os.environ.get("FACTCHECK_PASSWORD_HASH", "")
 
 # Google Gemini API key, used by factcheck/checker.py to make the fact-check decision.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Cheap Gemini text model that writes the explanation (factcheck/explainer.py).
+GEMINI_EXPLAIN_MODEL = os.environ.get("GEMINI_EXPLAIN_MODEL", "gemini-3.5-flash-lite")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
