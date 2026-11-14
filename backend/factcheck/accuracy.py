@@ -116,6 +116,7 @@ def statistics(rows):
     return {**counts, "metrics": metrics, "attempted": attempted, "completed": len(completed),
             "abstentions": sum(sample["decision"] == "NOT ENOUGH INFO" for sample in completed),
             "failed": sum(sample["status"] == "error" for sample in samples),
+            "correction_failures": sum(sample["analysis_status"] == "error" for sample in samples),
             "interrupted": sum(sample["status"] == "started" for sample in samples),
             "pending": 200 - attempted,
             "decisive_accuracy": percent(tp + tn, decided)}
