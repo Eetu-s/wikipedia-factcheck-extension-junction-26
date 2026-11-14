@@ -4,7 +4,7 @@
 // we POST the text to the backend -> the result is saved to chrome.storage.session ->
 // the side panel (sidepanel.js) sees the change and shows it.
 
-const DEFAULT_BACKEND_URL = "http://localhost:8000";
+const DEFAULT_BACKEND_URL = "https://klausde.tech";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({

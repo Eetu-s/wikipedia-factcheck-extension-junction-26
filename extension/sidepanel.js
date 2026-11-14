@@ -10,7 +10,7 @@ const backendUrlInput = document.getElementById("backendUrl");
 const passwordInput = document.getElementById("password");
 const resultEl = document.getElementById("result");
 
-const DEFAULT_BACKEND_URL = "http://localhost:8000";
+const DEFAULT_BACKEND_URL = "https://klausde.tech";
 
 // --- Login / logout ---
 
