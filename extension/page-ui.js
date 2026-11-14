@@ -15,7 +15,8 @@
     .guide { width:310px; max-width:calc(100vw - 24px); right:12px; bottom:12px; display:grid; gap:8px; max-height:calc(100dvh - 24px); overflow:auto; }
     .guide-head,.row { display:flex; align-items:center; justify-content:space-between; gap:8px; } .guide-head h2 { min-width:0; } .guide-actions { display:flex; flex-shrink:0; gap:6px; } .guide-head button { font-size:12px; min-height:26px; padding:2px 7px; }
     .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--muted); } .legend span { display:inline-flex; gap:5px; align-items:center; } .dot { width:9px; height:9px; display:inline-block; background:var(--muted); } .green { background:var(--green); } .red { background:var(--red); }
-    progress { width:100%; height:6px; appearance:none; border:0; background:var(--paper-3); accent-color:var(--ink); } progress::-webkit-progress-bar { background:var(--paper-3); } progress::-webkit-progress-value { background:var(--ink); }
+    .bar { display:flex; width:100%; height:8px; background:var(--paper-3); overflow:hidden; } .bar > span { height:100%; width:0; transition:width .2s ease-out; } @media (prefers-reduced-motion: reduce) { .bar > span { transition:none; } }
+    .bar .supported { background:var(--green); } .bar .refuted { background:var(--red); } .bar .uncertain { background:var(--muted); } .failed-fill { background:repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 4px); }
     .controls { display:flex; flex-wrap:wrap; gap:6px; } .controls button { font-size:12px; }
     .keyboard { display:grid; gap:6px; border-top:1px solid var(--rule); padding-top:8px; } .keyboard select { width:100%; min-height:32px; border:1px solid var(--rule); border-radius:0; background:var(--paper); padding:4px; }
     .popover { width:390px; max-width:calc(100vw - 24px); max-height:calc(100dvh - 24px); overflow:auto; display:grid; gap:12px; overscroll-behavior:contain; }
@@ -130,10 +131,18 @@
     guideActions.append(toggle, closeGuide);
     guideHead.append(guideActions);
     const progressText = element("p", "muted", "Preparing article…");
-    const progress = element("progress");
+    // Stacked bar: one coloured segment per result type, in legend order; the empty track is pending.
+    const progress = element("div", "bar");
+    progress.setAttribute("role", "progressbar");
     progress.setAttribute("aria-label", "Fast check progress");
+    progress.setAttribute("aria-valuemin", "0");
+    const segments = {
+      supported: element("span", "supported"), refuted: element("span", "refuted"),
+      uncertain: element("span", "uncertain"), failed: element("span", "failed-fill"),
+    };
+    progress.append(...Object.values(segments));
     const legend = element("div", "legend");
-    for (const [color, text] of [["green", "Supported"], ["red", "Refuted"], ["", "Uncertain"]]) {
+    for (const [color, text] of [["green", "Supported"], ["red", "Refuted"], ["", "Uncertain"], ["failed-fill", "Failed"]]) {
       const item = element("span");
       item.append(element("i", "dot " + color), document.createTextNode(text));
       legend.append(item);
@@ -199,7 +208,7 @@
     }
     function animateSentence(sentence) {
       if (destroyed || reducedMotion?.matches || !globalThis.CSS?.highlights || !globalThis.Highlight
-          || typeof host.animate !== "function" || hops.has(sentence.id)) return;
+        || typeof host.animate !== "function" || hops.has(sentence.id)) return;
       const overlay = element("div", "sentence-hop");
       overlay.setAttribute("aria-hidden", "true");
       overlay.inert = true;
@@ -484,8 +493,19 @@
       const total = meta.total ?? sentences.length;
       const completed = meta.completed ?? sentences.filter(item => item.status === "done" || item.status === "failed").length;
       const failed = meta.failed ?? sentences.filter(item => item.status === "failed").length;
-      progress.max = Math.max(1, total);
-      progress.value = completed;
+      const counts = { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
+      for (const item of sentences) {
+        if (item.status === "failed") counts.failed++;
+        else if (item.status !== "done") continue;
+        else if (item.result?.decision === "SUPPORTED") counts.supported++;
+        else if (item.result?.decision === "REFUTED") counts.refuted++;
+        else counts.uncertain++;
+      }
+      for (const [name, count] of Object.entries(counts)) {
+        segments[name].style.width = (100 * count / Math.max(1, total)) + "%";
+      }
+      progress.setAttribute("aria-valuemax", String(Math.max(1, total)));
+      progress.setAttribute("aria-valuenow", String(completed));
       const summary = `${completed} / ${total} checked${failed ? ` · ${failed} failed` : ""}${meta.stopped ? " · stopped" : ""}`;
       progressText.textContent = summary;
       const guideState = JSON.stringify([summary, meta.error || "", Boolean(meta.changed)]);
@@ -494,7 +514,7 @@
       lastGuideState = guideState;
       stop.disabled = meta.stopped || completed >= total;
       retry.hidden = !failed;
-      notice.textContent = meta.error || (meta.changed ? "Article changed. Select Rescan to check the current content." : "Newly loaded content is checked only after Rescan. ◌ Pending · ? Uncertain · ! Failed");
+      notice.textContent = meta.error || (meta.changed ? "Article changed. Select Rescan to check the current content." : "Newly loaded content is checked only after Rescan.");
       notice.className = meta.error ? "error" : "muted";
       const ids = sentences.map(item => item.id).join("\n");
       const selected = select.value;
