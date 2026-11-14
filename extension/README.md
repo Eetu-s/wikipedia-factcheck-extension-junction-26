@@ -36,10 +36,14 @@ to analyze the chosen sentence.
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
 Its **×** closes the overlay and clears the scan. Navigating or switching away from the
 tab also closes it; leaving the browser window dismisses the sentence popover.
-Three fast requests run concurrently, with visible sentences prioritized and the entire
-extracted article eventually processed. Checks use the saved password with `/api/factcheck/`,
-which bypasses the public API and production proxy rate limits. Upstream model-provider
-rate limits still pause the queue with bounded retries.
+Up to six streams check eight sentences each (48 in flight), prioritizing visible text
+and then nearby content. Each sentence appears on the next animation frame after its
+answer arrives, independently of the other sentences in its request. Highlight ranges
+and selector options update incrementally, and decorative hops have a small frame budget
+so bursts of results do not block scrolling.
+Checks use the saved password with `/api/factcheck/batch/`, which bypasses the public API
+and production proxy rate limits. Upstream model-provider rate limits still pause the
+queue with bounded retries.
 Article/context changes invalidate the snapshot; appended content is checked only after
 an explicit **Rescan**. Clear, navigation, and restarting discard stale responses. Cached
 fast results include the original sentence, location, page, context, tab, and backend and
@@ -130,6 +134,16 @@ starts deep work; the action is idempotent across repeated requests. Poll
 `paragraphs`, `errors`, `unverified_facts`, and `incomplete`. Correction offsets use Unicode
 code points into the saved original sentence and are validated without relocating phrases.
 Polling and cached results never start analysis.
+
+Page scans use `POST /api/factcheck/batch/` with `items` (up to 10 sentence objects) and
+`stream: true`. The response is NDJSON: one `{index, ...answer}` line per finished sentence
+in completion order. Each successful `check_id` is saved before its line is sent, so deep
+analysis is immediately available. Retrieval runs in small parallel groups and feeds model
+decisions as soon as each group is ready. Shared server pools default to four retrieval
+and 32 decision workers per process; set `PAGE_SCAN_RETRIEVAL_WORKERS` and
+`PAGE_SCAN_DECISION_WORKERS` in `backend/.env` to tune these limits for the deployment.
+The nginx batch route disables response buffering. Omitting `stream` retains ordered JSON
+results for other clients.
 
 Retrieval includes the target and local context. Model inputs separate TARGET SENTENCE,
 PAGE CONTEXT, and WIKIPEDIA EVIDENCE. Context may resolve a subject, pronoun, or relative
