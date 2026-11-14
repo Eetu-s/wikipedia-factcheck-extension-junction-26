@@ -7,6 +7,10 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
+# Hash (from django.contrib.auth.hashers.make_password) of the password required by /api/factcheck/.
+# Empty means the endpoint rejects every request.
+FACTCHECK_PASSWORD_HASH = os.environ.get("FACTCHECK_PASSWORD_HASH", "")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
