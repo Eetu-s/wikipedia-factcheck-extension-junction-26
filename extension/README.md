@@ -4,8 +4,9 @@ A Chrome extension (Manifest V3). Select text on any page, right-click, and choo
 
 The fast verdict appears first. For refuted selections, **Why it's refuted** shows a loading
 message while deeper analysis checks each factual assertion against the local Wikipedia
-dataset. It then highlights incorrect phrases and shows numbered explanations, corrected
-sentences, and short Wikipedia quotations with article links. Facts without enough evidence
+dataset. It then highlights incorrect phrases and shows one explanation per error combining
+the misinformation and correct fact in the selection's language, followed by short Wikipedia
+quotations with article links. Facts without enough evidence
 are listed separately; failed or timed-out searches are marked as incomplete.
 
 The fast verdict uses `gemini-decision-1`. Deeper analysis uses `GEMINI_EXPLAIN_MODEL`
