@@ -3,8 +3,9 @@ import json
 import urllib.error
 from unittest.mock import patch
 
+import pymysql
 from django.contrib.auth.hashers import make_password
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 
 class HealthTests(TestCase):
@@ -85,3 +86,74 @@ class FactCheckTests(TestCase):
         response = self.post()
         self.assertEqual(response.status_code, 502)
         self.assertIn("GEMINI_API_KEY", response.json()["error"])
+
+
+def row(url, distance, title="T", text="text", page_id=None):
+    return {"lang": "en", "page_id": page_id if page_id is not None else hash(url), "title": title,
+            "url": url, "distance": distance, "text": text}
+
+
+class FuseRankingsTests(SimpleTestCase):
+    def fuse(self, *rankings, limit=3):
+        from .checker import fuse_rankings
+
+        return [r["url"] for r in fuse_rankings(list(rankings), limit)]
+
+    def test_takes_turns_starting_with_the_closest_ranking(self):
+        paragraphs = [row("p1", 0.40), row("p2", 0.43), row("p3", 0.44)]
+        articles = [row("a1", 0.47), row("a2", 0.48)]
+        self.assertEqual(self.fuse(articles, paragraphs), ["p1", "a1", "p2"])
+
+    def test_skips_distant_results_and_duplicate_articles(self):
+        paragraphs = [row("p1", 0.30, page_id=1), row("p2", 0.35)]
+        articles = [row("a1", 0.32, page_id=1), row("a2", 0.6)]  # same article as p1; too far
+        self.assertEqual(self.fuse(paragraphs, articles), ["p1", "p2"])
+
+    def test_no_results(self):
+        self.assertEqual(self.fuse([], [row("far", 0.9)]), [])
+
+
+class SearchWikipediaTests(SimpleTestCase):
+    @patch("factcheck.checker.connect")
+    @patch("factcheck.checker.embed_many", return_value=[[0.1] * 1024])
+    @patch("factcheck.checker.chunk_search", return_value=[row("https://en.wikipedia.org/wiki/P", 0.2)])
+    @patch("factcheck.checker.semantic_search")
+    def test_missing_table_is_skipped(self, semantic_search, chunk_search, embed, connect):
+        from .checker import search_wikipedia
+
+        semantic_search.side_effect = pymysql.ProgrammingError(1146, "Table doesn't exist")
+        articles = search_wikipedia("claim")
+        self.assertEqual([a["url"] for a in articles], ["https://en.wikipedia.org/wiki/P"])
+        embed.assert_called_once_with(["claim"])  # embedded once, shared by both searches
+        self.assertEqual(chunk_search.call_args.kwargs["vector"], [0.1] * 1024)
+
+    @patch("factcheck.checker.connect")
+    @patch("factcheck.checker.embed_many", return_value=[[0.1] * 1024])
+    @patch("factcheck.checker.chunk_search", return_value=[])
+    @patch("factcheck.checker.semantic_search")
+    def test_other_database_errors_fail(self, semantic_search, chunk_search, embed, connect):
+        from .checker import CheckerError, search_wikipedia
+
+        semantic_search.side_effect = pymysql.ProgrammingError(1064, "Syntax error")
+        with self.assertRaises(CheckerError):
+            search_wikipedia("claim")
+
+
+class ArticleExcerptTests(SimpleTestCase):
+    def paragraphs(self, count, size=10):
+        return [(seq, f"p{seq}".ljust(size, ".")) for seq in range(count)]
+
+    def test_whole_article_when_it_fits(self):
+        from wikirag.search import article_excerpt
+
+        text = article_excerpt(self.paragraphs(3), matched=[2], max_chars=1000)
+        self.assertEqual(text, "p0........\n\np1........\n\np2........")
+
+    def test_lead_and_neighbours_of_matches_when_too_long(self):
+        from wikirag.search import article_excerpt
+
+        text = article_excerpt(self.paragraphs(20), matched=[10], max_chars=100)
+        self.assertEqual(text.split("\n\n"), [
+            "p0........", "p1........", "[...]", "p8........", "p9........", "p10.......",
+            "p11.......", "p12.......", "[...]",
+        ])
