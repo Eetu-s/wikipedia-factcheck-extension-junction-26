@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Type or paste a claim and check it against Wikipedia: a verdict, a confidence and the sources behind it.">
+  <title>Wikipedia Fact Check</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Wikipedia Fact Check</h1>
+      <p class="lead">Type or paste a claim. It is checked against Wikipedia and you get a verdict, a confidence and the sources behind it.</p>
+    </header>
+
+    <main class="stack">
+      <form id="check" class="stack">
+        <label for="claim">Claim
+          <textarea id="claim" name="claim" rows="4" maxlength="2000" required spellcheck="true" placeholder="Paste or type the claim here"></textarea>
+        </label>
+        <div class="actions">
+          <button id="submit" type="submit">Fact-check</button>
+        </div>
+      </form>
+
+      <div id="result" class="stack" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
