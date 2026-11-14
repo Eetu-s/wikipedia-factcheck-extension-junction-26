@@ -34,6 +34,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Cheap Gemini text model that writes the explanation (factcheck/explainer.py).
 GEMINI_EXPLAIN_MODEL = os.environ.get("GEMINI_EXPLAIN_MODEL", "gemini-3.5-flash")
 
+# Shared page-scan pools, per server process. Keep concurrent scans from multiplying
+# their own worker pools, while overlapping Wikipedia retrieval and model requests.
+PAGE_SCAN_RETRIEVAL_WORKERS = max(1, min(16, int(os.environ.get("PAGE_SCAN_RETRIEVAL_WORKERS", "4"))))
+PAGE_SCAN_DECISION_WORKERS = max(1, min(128, int(os.environ.get("PAGE_SCAN_DECISION_WORKERS", "32"))))
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

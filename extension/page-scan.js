@@ -2,16 +2,15 @@
  * mutation observers invalidate it but never enqueue newly loaded text. */
 (() => {
   if (globalThis.WikiFactPageScan) return;
-  // Sentences go to the backend in batches: one request checks up to BATCH_SIZE sentences
-  // (one password check, one embedding call and one database write on the server).
-  // CONCURRENCY is the number of batches in flight.
-  const CONCURRENCY = 4;
+  // Bounded streams keep the pipeline full; each item paints independently of its siblings.
+  const CONCURRENCY = 6;
   const BATCH_SIZE = 8;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
   let scan = null;
   let starting = 0;
   let renderFrame = 0;
+  let priorityFrame = 0;
   let hoverFrame = 0;
   let wakeTimer = 0;
 
@@ -22,29 +21,48 @@
   const valid = (sentence) => sentence.isValid ? sentence.isValid() :
     sentence.range.startContainer.isConnected && sentence.range.endContainer.isConnected;
   const ranges = (sentence) => sentence.ranges || [sentence.range];
+  const groupOf = (sentence) => sentence.status === "failed" ? "failed" : sentence.status !== "done" ? "pending" :
+    sentence.result.decision === "SUPPORTED" ? "supported" :
+      sentence.result.decision === "REFUTED" ? "refuted" : "uncertain";
 
-  function refresh() {
+  function refresh(sentence) {
+    if (sentence && scan) scan.dirty.add(sentence);
     if (!scan || renderFrame) return;
     renderFrame = requestAnimationFrame(() => {
       renderFrame = 0;
       if (!scan) return;
-      const groups = Object.fromEntries(names.map((name) => [name, []]));
-      for (const sentence of scan.sentences) {
-        if (scan.invalid) continue;
-        const group = sentence.status === "failed" ? "failed" : sentence.status !== "done" ? "pending" :
-          sentence.result.decision === "SUPPORTED" ? "supported" :
-            sentence.result.decision === "REFUTED" ? "refuted" : "uncertain";
-        groups[group].push(...ranges(sentence));
+      const current = scan;
+      const changed = [...current.dirty];
+      current.dirty.clear();
+      for (const sentence of changed) {
+        const completed = sentence.status === "done" || sentence.status === "failed";
+        current.completed += Number(completed) - Number(sentence.paintedComplete || false);
+        current.failed += Number(sentence.status === "failed") - Number(sentence.paintedFailed || false);
+        sentence.paintedComplete = completed;
+        sentence.paintedFailed = sentence.status === "failed";
+        if (!current.highlights || current.invalid) continue;
+        const group = groupOf(sentence);
+        if (sentence.highlightGroup === group) continue;
+        for (const range of ranges(sentence)) {
+          if (sentence.highlightGroup) current.highlights[sentence.highlightGroup].delete(range);
+          current.highlights[group].add(range);
+        }
+        sentence.highlightGroup = group;
       }
-      if (globalThis.CSS?.highlights && globalThis.Highlight) {
-        for (const name of names) CSS.highlights.set("wfc-" + name, new Highlight(...groups[name]));
-      }
-      const completed = scan.sentences.filter((s) => s.status === "done" || s.status === "failed").length;
-      scan.ui.update(scan.sentences, {
-        total: scan.sentences.length, completed,
-        failed: scan.sentences.filter((s) => s.status === "failed").length,
-        stopped: scan.stopped, changed: scan.changed, error: scan.error,
+      current.ui.update(current.sentences, {
+        total: current.sentences.length, completed: current.completed, failed: current.failed,
+        stopped: current.stopped, changed: current.changed, error: current.error,
+        changedSentences: changed,
       });
+      // Verdicts paint immediately. Decorative hops share a small frame budget during bursts.
+      const deadline = performance.now() + 4;
+      let animated = 0;
+      for (const sentence of current.animations) {
+        current.animations.delete(sentence);
+        if (!current.invalid && !current.stopped) current.ui.animateSentence(sentence);
+        if (++animated >= 3 || performance.now() >= deadline) break;
+      }
+      if (current.animations.size) refresh();
     });
   }
 
@@ -65,12 +83,17 @@
     if (!current) return;
     current.stopped = true;
     current.ui.clearAnimations();
+    current.animations.clear();
+    current.queue.length = 0;
+    current.queued.clear();
+    forgetWaiting(current);
     clearTimeout(wakeTimer);
     current.cancelFast = send("WFC_SCAN_CANCEL", { kind: "fast" }, current).catch(() => {});
     for (const sentence of current.sentences) {
       if (["pending", "running"].includes(sentence.status)) {
         sentence.version++;
         sentence.status = "stopped";
+        current.dirty.add(sentence);
       }
     }
     refresh();
@@ -82,10 +105,12 @@
     scan = null;
     clearTimeout(wakeTimer);
     cancelAnimationFrame(renderFrame);
+    cancelAnimationFrame(priorityFrame);
     cancelAnimationFrame(hoverFrame);
-    renderFrame = hoverFrame = 0;
+    renderFrame = hoverFrame = priorityFrame = 0;
     if (!old) return;
     old.invalid = true;
+    forgetWaiting(old);
     old.observer?.disconnect();
     clearInterval(old.navigationTimer);
     old.ui.destroy();
@@ -104,9 +129,24 @@
     if (scan && location.href !== scan.url) clear();
   }
 
-  function visible(sentence) {
-    const rect = sentence.range.getBoundingClientRect();
-    return rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+  function enqueue(current, sentence) {
+    if (current.queued.has(sentence)) return;
+    current.queued.add(sentence);
+    current.queue.push(sentence);
+    current.priorityDirty = true;
+  }
+
+  function prioritize(current) {
+    if (!current.priorityDirty) return;
+    current.priorityDirty = false;
+    // Read geometry once per queued sentence after scrolling, never inside a sort comparator.
+    const positions = new Map(current.queue.map((sentence) => {
+      const rect = sentence.range.getBoundingClientRect();
+      const visible = rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+      return [sentence, { visible, distance: Math.max(0, -rect.bottom, rect.top - innerHeight) }];
+    }));
+    current.queue.sort((a, b) => Number(positions.get(b).visible) - Number(positions.get(a).visible) ||
+      positions.get(a).distance - positions.get(b).distance || a.index - b.index);
   }
 
   function pump(current = scan) {
@@ -117,17 +157,31 @@
       wakeTimer = setTimeout(() => pump(current), current.cooldown - now);
       return;
     }
-    const pending = current.sentences.filter((s) => s.status === "pending" && s.retryAt <= now);
-    // Re-evaluate priority as the reader scrolls; every sentence remains in this finite queue.
-    pending.sort((a, b) => Number(visible(b)) - Number(visible(a)) || a.index - b.index);
-    while (current.active < CONCURRENCY && pending.length) {
-      const batch = pending.splice(0, BATCH_SIZE);
+    // A streamed item can paint without walking the rest of the article. The batch's
+    // completion callback refills the queue as soon as a connection becomes available.
+    if (current.active >= CONCURRENCY) { refresh(); return; }
+    prioritize(current);
+    const ready = [], deferred = [];
+    const slots = (CONCURRENCY - current.active) * BATCH_SIZE;
+    current.queue = current.queue.filter((sentence) => {
+      if (sentence.status !== "pending") { current.queued.delete(sentence); return false; }
+      if (sentence.retryAt <= now && ready.length < slots) {
+        ready.push(sentence);
+        current.queued.delete(sentence);
+        return false;
+      }
+      if (sentence.retryAt > now) deferred.push(sentence.retryAt);
+      return true;
+    });
+    while (ready.length) {
+      const batch = ready.splice(0, BATCH_SIZE);
       if (!batch.every(valid)) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
         return;
       }
       const versions = batch.map((sentence) => {
         sentence.status = "running";
+        current.dirty.add(sentence);
         return ++sentence.version;
       });
       current.active++;
@@ -136,18 +190,21 @@
         if (live(current)) { refresh(); pump(current); }
       });
     }
-    const deferred = current.sentences.filter((s) => s.status === "pending" && s.retryAt > now);
-    if (deferred.length) wakeTimer = setTimeout(() => pump(current), Math.max(1, Math.min(...deferred.map((s) => s.retryAt)) - now));
+    if (deferred.length) wakeTimer = setTimeout(() => pump(current), Math.max(1, Math.min(...deferred) - now));
     refresh();
   }
 
   // Sentences of in-flight batches, by scan id and sentence id, until their answer arrives.
   const waiting = new Map();
-  const waitingKey = (scanId, sentenceId) => scanId + "\n" + sentenceId;
+  const waitingKey = (scanId, sentenceId, requestId) => scanId + "\n" + sentenceId + "\n" + requestId;
+  function forgetWaiting(current) {
+    for (const [key, entry] of waiting) if (entry.current === current) waiting.delete(key);
+  }
 
   async function fastBatch(current, batch, versions) {
+    const requestId = ++current.nextRequest;
     const keys = batch.map((sentence, index) => {
-      const key = waitingKey(current.id, sentence.id);
+      const key = waitingKey(current.id, sentence.id, requestId);
       waiting.set(key, { current, sentence, version: versions[index] });
       return key;
     });
@@ -155,6 +212,7 @@
     try {
       // Answers arrive one by one as WFC_FAST_ITEM messages while this request is open.
       response = await send("WFC_FAST_BATCH", {
+        requestId,
         items: batch.map((sentence) => ({ sentenceId: sentence.id, text: sentence.text, context: sentence.context })),
       }, current);
     } catch (error) {
@@ -172,12 +230,12 @@
 
   // One sentence's answer from a streamed batch: apply and draw it right away.
   function fastItem(message) {
-    const key = waitingKey(message.scanId, message.sentenceId);
+    const key = waitingKey(message.scanId, message.sentenceId, message.requestId);
     const entry = waiting.get(key);
     if (!entry) return;
     waiting.delete(key);
     applyFast(entry.current, entry.sentence, entry.version, message.answer);
-    if (live(entry.current)) refresh();
+    if (live(entry.current)) { refresh(); pump(entry.current); }
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
@@ -192,6 +250,7 @@
             Date.now() + Math.max(1000, response.retryAfter || 2000 * 2 ** sentence.attempts));
           sentence.status = "pending";
           sentence.retryAt = current.cooldown;
+          enqueue(current, sentence);
           current.error = "Rate limit reached. Waiting before retrying…";
           return;
         }
@@ -208,11 +267,13 @@
       sentence.result = result;
       sentence.status = "done";
       current.error = "";
-      current.ui.animateSentence(sentence);
+      current.animations.add(sentence);
     } catch (error) {
       if (!live(current) || sentence.version !== version || current.stopped && sentence.status !== "running") return;
       sentence.status = "failed";
       sentence.error = error.message;
+    } finally {
+      if (scan === current) refresh(sentence);
     }
   }
 
@@ -229,6 +290,8 @@
         sentence.error = "";
         sentence.attempts = 0;
         sentence.retryAt = 0;
+        current.dirty.add(sentence);
+        enqueue(current, sentence);
       }
     }
     current.stopped = false;
@@ -318,9 +381,18 @@
       id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""),
       url: location.href, article, style, active: 0,
       cooldown: 0, stopped: false, invalid: false, changed: false, byNode: new WeakMap(),
+      queue: [], queued: new Set(), priorityDirty: true, nextRequest: 0,
+      dirty: new Set(), animations: new Set(), completed: 0, failed: 0,
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };
     scan = current;
+    current.queue = current.sentences.slice();
+    current.queued = new Set(current.sentences);
+    current.dirty = new Set(current.sentences);
+    if (globalThis.CSS?.highlights && globalThis.Highlight) {
+      current.highlights = Object.fromEntries(names.map((name) => [name, new Highlight()]));
+      for (const name of names) CSS.highlights.set("wfc-" + name, current.highlights[name]);
+    }
     current.ui = WikiFactPageUI.create({ onStop: () => stop(), onClear: clear, onRescan: start, onRetry: retry, onSelect: analyze });
     for (const sentence of current.sentences) {
       for (const { node } of sentence.segments) {
@@ -382,7 +454,12 @@
     scan.ui.show(sentence, { x: event.clientX, y: event.clientY, pinned: true });
     if (sentence.status === "done") analyze(sentence.id);
   }, true);
-  window.addEventListener("scroll", () => { if (scan && !scan.stopped) pump(); }, { passive: true });
+  window.addEventListener("scroll", () => {
+    if (!scan || scan.stopped || scan.invalid) return;
+    scan.priorityDirty = true;
+    if (!priorityFrame) priorityFrame = requestAnimationFrame(() => { priorityFrame = 0; pump(); });
+  }, { passive: true });
+  window.addEventListener("resize", () => { if (scan) scan.priorityDirty = true; }, { passive: true });
   window.addEventListener("pagehide", () => { clear(); });
   window.addEventListener("popstate", closeOnNavigation);
   window.addEventListener("hashchange", closeOnNavigation);

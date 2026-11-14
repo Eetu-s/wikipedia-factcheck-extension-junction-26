@@ -180,6 +180,10 @@
     document.documentElement.append(host);
     let sentences = [], current = null, pinned = false, hideTimer, destroyed = false, autoCollapsed = false;
     let position = { x: 12, y: 12 }, lastGuideState = "", optionIds = "", renderKey = "", announcedSentenceState = "";
+    const optionById = new Map();
+    const progressCounts = { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
+    const progressGroupById = new Map();
+    const progressWidths = new Map();
     const hops = new Map();
     const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)");
     const textProperties = ["font-family", "font-size", "font-weight", "font-style", "font-stretch",
@@ -209,6 +213,8 @@
     function animateSentence(sentence) {
       if (destroyed || reducedMotion?.matches || !globalThis.CSS?.highlights || !globalThis.Highlight
         || typeof host.animate !== "function" || hops.has(sentence.id)) return;
+      const bounds = sentence.range?.getBoundingClientRect();
+      if (bounds && (bounds.bottom <= 0 || bounds.top >= innerHeight || bounds.right <= 0 || bounds.left >= innerWidth)) return;
       const overlay = element("div", "sentence-hop");
       overlay.setAttribute("aria-hidden", "true");
       overlay.inert = true;
@@ -220,6 +226,7 @@
           if (!source?.isConnected || !source.parentElement) return;
           const css = getComputedStyle(source.parentElement);
           if (css.writingMode !== "horizontal-tb") return;
+          const typography = textProperties.map(property => [property, css.getPropertyValue(property)]);
           const range = document.createRange();
           // Word-sized fragments retain the page's actual spacing and justification.
           // A word normally has one rectangle; split it only if it wraps across lines.
@@ -247,7 +254,7 @@
               }
               const rect = range.getBoundingClientRect();
               if (rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth) {
-                fragments.push({ text: source.data.slice(start, stop), rect, css });
+                fragments.push({ text: source.data.slice(start, stop), rect, typography });
                 activeRanges.push(range.cloneRange());
               }
               start = stop;
@@ -255,18 +262,25 @@
           }
         }
         if (!fragments.length) return;
-        shadow.append(overlay);
-        for (const { text, rect, css } of fragments) {
+        const copies = fragments.map(({ text, rect, typography }) => {
           const fragment = element("span", "sentence-hop-fragment", text);
-          for (const property of textProperties) fragment.style.setProperty(property, css.getPropertyValue(property));
+          for (const [property, value] of typography) fragment.style.setProperty(property, value);
           overlay.append(fragment);
+          return { fragment, rect };
+        });
+        shadow.append(overlay);
+        // Build together, measure together, then position together: one layout for the whole hop.
+        const positions = copies.map(({ fragment, rect }) => {
           // Range boxes describe glyphs, whereas positioned spans include line-height.
           // Measuring the copy gives an exact baseline without font-specific guesses.
           const copyRange = document.createRange();
           copyRange.selectNodeContents(fragment);
           const copyRect = copyRange.getBoundingClientRect();
-          fragment.style.left = rect.left - copyRect.left + "px";
-          fragment.style.top = rect.top - copyRect.top + "px";
+          return { fragment, left: rect.left - copyRect.left, top: rect.top - copyRect.top };
+        });
+        for (const { fragment, left, top } of positions) {
+          fragment.style.left = left + "px";
+          fragment.style.top = top + "px";
         }
         const hop = { element: overlay, ranges: activeRanges, animation: null };
         hops.set(sentence.id, hop);
@@ -489,46 +503,69 @@
     }
     function update(nextSentences = [], meta = {}) {
       if (destroyed) return;
+      const listChanged = sentences !== nextSentences;
       sentences = nextSentences;
       const total = meta.total ?? sentences.length;
       const completed = meta.completed ?? sentences.filter(item => item.status === "done" || item.status === "failed").length;
       const failed = meta.failed ?? sentences.filter(item => item.status === "failed").length;
-      const counts = { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
-      for (const item of sentences) {
-        if (item.status === "failed") counts.failed++;
-        else if (item.status !== "done") continue;
-        else if (item.result?.decision === "SUPPORTED") counts.supported++;
-        else if (item.result?.decision === "REFUTED") counts.refuted++;
-        else counts.uncertain++;
+      const ids = meta.changedSentences && !listChanged && optionById.size === sentences.length ? optionIds :
+        sentences.map(item => item.id).join("\n");
+      const resetCounts = ids !== optionIds;
+      if (resetCounts) {
+        for (const name of Object.keys(progressCounts)) progressCounts[name] = 0;
+        progressGroupById.clear();
       }
-      for (const [name, count] of Object.entries(counts)) {
-        segments[name].style.width = (100 * count / Math.max(1, total)) + "%";
+      for (const item of resetCounts ? sentences : meta.changedSentences ?? sentences) {
+        const previous = progressGroupById.get(item.id);
+        const group = item.status === "failed" ? "failed" : item.status !== "done" ? undefined :
+          item.result?.decision === "SUPPORTED" ? "supported" :
+            item.result?.decision === "REFUTED" ? "refuted" : "uncertain";
+        if (previous === group) continue;
+        if (previous) progressCounts[previous]--;
+        if (group) { progressCounts[group]++; progressGroupById.set(item.id, group); }
+        else progressGroupById.delete(item.id);
       }
-      progress.setAttribute("aria-valuemax", String(Math.max(1, total)));
-      progress.setAttribute("aria-valuenow", String(completed));
+      for (const [name, count] of Object.entries(progressCounts)) {
+        const width = (100 * count / Math.max(1, total)) + "%";
+        if (progressWidths.get(name) !== width) {
+          segments[name].style.width = width;
+          progressWidths.set(name, width);
+        }
+      }
+      const max = String(Math.max(1, total)), value = String(completed);
+      if (progress.getAttribute("aria-valuemax") !== max) progress.setAttribute("aria-valuemax", max);
+      if (progress.getAttribute("aria-valuenow") !== value) progress.setAttribute("aria-valuenow", value);
       const summary = `${completed} / ${total} checked${failed ? ` · ${failed} failed` : ""}${meta.stopped ? " · stopped" : ""}`;
-      progressText.textContent = summary;
+      if (progressText.textContent !== summary) progressText.textContent = summary;
       const guideState = JSON.stringify([summary, meta.error || "", Boolean(meta.changed)]);
       const guideAnnouncement = guideState !== lastGuideState ? [summary,
         meta.error, meta.changed ? "Article changed. Select Rescan to check the current content." : ""].filter(Boolean).join(". ") : "";
       lastGuideState = guideState;
       stop.disabled = meta.stopped || completed >= total;
       retry.hidden = !failed;
-      notice.textContent = meta.error || (meta.changed ? "Article changed. Select Rescan to check the current content." : "Newly loaded content is checked only after Rescan.");
-      notice.className = meta.error ? "error" : "muted";
-      const ids = sentences.map(item => item.id).join("\n");
+      const noticeText = meta.error || (meta.changed ? "Article changed. Select Rescan to check the current content." : "Newly loaded content is checked only after Rescan.");
+      if (notice.textContent !== noticeText) notice.textContent = noticeText;
+      const noticeClass = meta.error ? "error" : "muted";
+      if (notice.className !== noticeClass) notice.className = noticeClass;
       const selected = select.value;
       if (ids !== optionIds) {
+        optionById.clear();
         select.replaceChildren(...sentences.map((sentence, index) => {
           const option = element("option");
           option.value = sentence.id;
           option.textContent = `${index + 1}. ${label(sentence)} · ${sentence.text.slice(0, 90)}`;
+          optionById.set(sentence.id, { option, index });
           return option;
         }));
         if (sentences.some(item => item.id === selected)) select.value = selected;
         optionIds = ids;
       } else {
-        sentences.forEach((sentence, index) => { select.options[index].textContent = `${index + 1}. ${label(sentence)} · ${sentence.text.slice(0, 90)}`; });
+        for (const sentence of meta.changedSentences ?? sentences) {
+          const entry = optionById.get(sentence.id);
+          if (!entry) continue;
+          const text = `${entry.index + 1}. ${label(sentence)} · ${sentence.text.slice(0, 90)}`;
+          if (entry.option.textContent !== text) entry.option.textContent = text;
+        }
       }
       select.disabled = previous.disabled = next.disabled = inspect.disabled = !sentences.length;
       if (current) {

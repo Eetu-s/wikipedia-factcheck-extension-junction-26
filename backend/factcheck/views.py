@@ -4,9 +4,10 @@ import logging
 import os
 import tempfile
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import timedelta
+from queue import SimpleQueue
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
@@ -174,6 +175,15 @@ def run_check(body: dict) -> JsonResponse:
 
 
 MAX_BATCH = 10
+# Small retrieval groups preserve embedding reuse without making the first sentence
+# wait for every vector search in the request. The pools are shared by all streams.
+STREAM_RETRIEVAL_GROUP_SIZE = 2
+stream_retrieval_pool = ThreadPoolExecutor(
+    max_workers=settings.PAGE_SCAN_RETRIEVAL_WORKERS, thread_name_prefix="page-retrieval",
+)
+stream_decision_pool = ThreadPoolExecutor(
+    max_workers=settings.PAGE_SCAN_DECISION_WORKERS, thread_name_prefix="page-decision",
+)
 
 
 @csrf_exempt  # Called by the extension with a password, not a browser session.
@@ -190,8 +200,8 @@ def factcheck_batch(request):
     With "stream": true, the response is NDJSON instead: one {"index": int, ...answer} line per
     item, in the order the decisions finish.
 
-    The password is hashed once per batch, all retrieval queries are embedded in one call, the
-    Gemini decisions run in parallel, and the stored checks are written in one transaction.
+    The password is hashed once per batch. Streaming overlaps small retrieval groups and
+    model decisions, and saves each completed check before emitting its line.
     """
     try:
         body = json.loads(request.body)
@@ -224,19 +234,18 @@ def factcheck_batch(request):
     if not isinstance(stream, bool):
         return JsonResponse({"error": "'stream' must be a boolean."}, status=400)
 
-    # Retrieval (one embedding call, one database connection) runs before any response is sent,
-    # so a failure that affects every sentence still gets a normal 502.
+    if stream:
+        response = StreamingHttpResponse(stream_batch(items), content_type="application/x-ndjson")
+        response["Cache-Control"] = "no-store, no-transform"
+        response["X-Accel-Buffering"] = "no"
+        return response
+
+    # The non-streaming contract retains one retrieval call and ordered JSON results.
     try:
         article_lists = retrieve_many([(text, context) for text, _, context in items])
     except CheckerError as e:
         logger.warning("Batch page fact check failed: %s", e)
         return JsonResponse({"error": "Fact check is unavailable. Please retry."}, status=502)
-
-    if stream:
-        response = StreamingHttpResponse(stream_batch(items, article_lists), content_type="application/x-ndjson")
-        response["Cache-Control"] = "no-store"
-        response["X-Accel-Buffering"] = "no"  # nginx: pass each line on at once, don't buffer.
-        return response
 
     with ThreadPoolExecutor(max_workers=min(BATCH_DECISION_WORKERS, len(items))) as pool:
         outcomes = list(pool.map(decide_or_error, [(text, context) for text, _, context in items], article_lists))
@@ -246,37 +255,56 @@ def factcheck_batch(request):
     return JsonResponse({"results": [answer for answer, _ in answers]})
 
 
-def stream_batch(items, article_lists):
-    """NDJSON lines, one per sentence as soon as its Gemini decision finishes: {"index", ...answer}.
+def stream_batch(items):
+    """Pipeline retrieval and decisions; emit durable answers in completion order.
 
-    Decisions that finish together are stored in one transaction, before their lines are sent,
-    so a check_id always exists by the time the client can ask for its deeper analysis.
+    A slow embedding group or model call cannot hold up an unrelated ready sentence.
+    Worker threads only use RAG connections (closed by retrieve_many) and HTTP; Django
+    writes stay on the response thread so every emitted check_id is already readable.
     """
-    pool = ThreadPoolExecutor(max_workers=min(BATCH_DECISION_WORKERS, len(items)))
+    ready = SimpleQueue()
+    pending = {}
+
+    def submit(pool, kind, indices, function, *args):
+        future = pool.submit(function, *args)
+        pending[future] = kind, indices
+        future.add_done_callback(ready.put)
+
+    def answer_line(index, outcome):
+        answer, row = batch_answer(items[index], outcome)
+        if row is not None:
+            row.save(force_insert=True)
+        return json.dumps({"index": index, **answer}) + "\n"
+
     try:
-        futures = {
-            pool.submit(decide_or_error, (text, context), articles): index
-            for index, ((text, _, context), articles) in enumerate(zip(items, article_lists))
-        }
-        pending = set(futures)
+        for start in range(0, len(items), STREAM_RETRIEVAL_GROUP_SIZE):
+            indices = list(range(start, min(start + STREAM_RETRIEVAL_GROUP_SIZE, len(items))))
+            submit(stream_retrieval_pool, "retrieve", indices, retrieve_many,
+                   [(items[index][0], items[index][2]) for index in indices])
         while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
-            finished = []
-            for future in done:
-                index = futures[future]
-                try:
-                    outcome = future.result()
-                except Exception:  # A bug for one sentence must not cut off the others.
-                    logger.exception("Page fact check crashed")
-                    outcome = CheckerError("Internal error.")
-                finished.append((index, *batch_answer(items[index], outcome)))
-            with transaction.atomic():
-                PageCheck.objects.bulk_create([row for _, _, row in finished if row])
-            for index, answer, _ in sorted(finished, key=lambda entry: entry[0]):
-                yield json.dumps({"index": index, **answer}) + "\n"
+            future = ready.get()
+            kind, indices = pending.pop(future)
+            try:
+                outcome = future.result()
+                if kind == "retrieve" and len(outcome) != len(indices):
+                    raise ValueError("Retrieval returned the wrong number of results.")
+            except CheckerError as error:
+                outcome = error
+            except Exception:  # One provider failure must not cut off unrelated sentences.
+                logger.exception("Page fact check %s crashed", kind)
+                outcome = CheckerError("Internal error.")
+            if kind == "retrieve" and not isinstance(outcome, CheckerError):
+                for index, articles in zip(indices, outcome):
+                    text, _, context = items[index]
+                    submit(stream_decision_pool, "decide", [index], decide_or_error,
+                           (text, context), articles)
+            else:
+                for index in indices:
+                    yield answer_line(index, outcome)
     finally:
-        # The client may disconnect mid-stream: don't start decisions nobody will read.
-        pool.shutdown(wait=False, cancel_futures=True)
+        # Cancel only this response's queued work; other scans keep their shared pools.
+        for future in pending:
+            future.cancel()
 
 
 def batch_answer(item, outcome):
