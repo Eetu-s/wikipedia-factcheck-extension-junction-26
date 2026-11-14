@@ -81,6 +81,11 @@ DATABASES = {
     }
 }
 
+# Durable benchmark snapshot, separate from short-lived explanation rows. Page reads never run it.
+ACCURACY_RESULTS_PATH = os.environ.get(
+    "ACCURACY_RESULTS_PATH", str(Path(DATABASES["default"]["NAME"]).parent / "accuracy-results.json")
+)
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

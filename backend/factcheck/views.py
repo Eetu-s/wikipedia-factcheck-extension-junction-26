@@ -5,17 +5,31 @@ from dataclasses import asdict
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.http import JsonResponse
+from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from .checker import CheckerError, check
 from .explainer import start_explanation
 from .models import Explanation
+from .accuracy import dataset, read_snapshot, statistics
 
 # How long GET /api/factcheck/explanation/<id>/ waits for the explanation before answering
 # "pending". Under 30 s, because Chrome can stop an extension's background script while a
 # fetch takes longer than that.
 EXPLANATION_WAIT_SECONDS = 25
+
+
+@require_GET
+def accuracy(request):
+    """Read a stored evaluation. Deliberately no call to the checker or explainer."""
+    snapshot = read_snapshot()
+    _, rows = dataset()
+    if snapshot is not None:
+        rows = snapshot["rows"]
+    return render(request, "factcheck/accuracy.html", {
+        "run": snapshot, "rows": rows, "stats": statistics(rows),
+    })
 
 
 @require_GET

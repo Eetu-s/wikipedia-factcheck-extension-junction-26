@@ -26,6 +26,9 @@ backend/db.sqlite3
 backend/db.sqlite3-journal
 backend/staticfiles/
 backend/media/
+backend/accuracy-results.lock
+backend/accuracy-results-*.json
+backend/.accuracy-*.tmp
 *.log
 
 # RAG data, indexes and model caches
