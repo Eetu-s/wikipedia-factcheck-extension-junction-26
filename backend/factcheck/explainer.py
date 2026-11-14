@@ -30,8 +30,14 @@ Verdict: {verdict}
 
 Which paragraph(s) in the Wikipedia articles below give this verdict for this claim?
 Answer only with those paragraphs, nothing else. Copy each one word for word; if a paragraph is \
-long, copy only the sentences that matter. Give one entry per article that supports or refutes \
+long, copy only the sentences that matter. Give one entry per selected article that supports or refutes \
 the claim, and leave out articles that don't.
+
+For a SUPPORTED verdict, identify the original claim's language and select relevant supporting
+snippets in this order: first that language, then English, then any other language. Use only
+the first tier that has a snippet supporting the claim among the supplied articles; omit
+lower-priority languages when a higher-priority one has suitable evidence. Copy snippets
+in their source language without translating them or inventing text.
 
 {articles}"""
 
