@@ -142,7 +142,7 @@
     };
     progress.append(...Object.values(segments));
     const legend = element("div", "legend");
-    for (const [color, text] of [["green", "Supported"], ["red", "Refuted"], ["", "Uncertain"], ["failed-fill", "Failed"]]) {
+    for (const [color, text] of [["green", "Supported"], ["red", "Refuted"], ["", "Uncertain"]]) {
       const item = element("span");
       item.append(element("i", "dot " + color), document.createTextNode(text));
       legend.append(item);
@@ -312,6 +312,25 @@
       }
     }
     document.addEventListener("keydown", onKey, true);
+    // Where the popover goes for a sentence: just above its first line, starting where the sentence
+    // starts (`above` is the y the popover's bottom edge should reach), or below it (`y`) when
+    // there's no room above. In viewport coordinates, like the popover's position: fixed.
+    function anchorOf(sentence) {
+      const rects = (sentence.ranges || [sentence.range]).filter(Boolean)
+        .flatMap((range) => [...range.getClientRects()]).filter((rect) => rect.width || rect.height);
+      if (!rects.length) return { x: 12, y: 12 };
+      return {
+        x: rects[0].left,
+        above: Math.min(...rects.map((rect) => rect.top)) - 8,
+        y: Math.max(...rects.map((rect) => rect.bottom)) + 8,
+      };
+    }
+    // Keep an open popover on its sentence while the page scrolls.
+    window.addEventListener("scroll", () => {
+      if (destroyed || popover.hidden || !current) return;
+      position = anchorOf(current);
+      clamp();
+    }, { passive: true, capture: true });
     function clamp() {
       if (popover.hidden || destroyed) return;
       const viewport = window.visualViewport;
@@ -339,8 +358,11 @@
         }
       }
       const height = popover.offsetHeight;
+      // Above the sentence when it fits, otherwise below it.
+      const y = Number.isFinite(position.above) && position.above - height >= top + 12
+        ? position.above - height : position.y;
       popover.style.left = x + "px";
-      popover.style.top = Math.max(top + 12, Math.min(position.y, bottom - height)) + "px";
+      popover.style.top = Math.max(top + 12, Math.min(y, bottom - height)) + "px";
     }
     window.addEventListener("resize", clamp);
     window.visualViewport?.addEventListener("resize", clamp);
@@ -479,11 +501,8 @@
       const same = current?.id === sentence.id;
       current = sentence;
       pinned = Boolean(options.pinned || (same && pinned));
-      if (Number.isFinite(options.x) && Number.isFinite(options.y)) position = { x: options.x + 12, y: options.y + 16 };
-      else if (!same) {
-        const rect = sentence.range?.getBoundingClientRect?.();
-        position = { x: rect?.left || 12, y: (rect?.bottom || 12) + 12 };
-      }
+      // Anchored to the sentence, not the mouse: moving within the sentence doesn't move it.
+      position = anchorOf(sentence);
       popover.hidden = false;
       renderPopover();
     }
