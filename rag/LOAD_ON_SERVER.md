@@ -40,8 +40,10 @@ docker compose -f docker-compose.prod.yml run -d --name wikirag-load \
 
 `RAG_DATA_DIR=/tmp/wikirag` is required: in production `/data/wikirag` is mounted read-only.
 
-Expected time: 30-60 minutes. Each file is downloaded (~440 MB), loaded, then deleted. Inserts
-slow down as the vector index grows (locally: 3, 5, 7, 9 and 10 minutes for the five files).
+Expected time: 45-90 minutes. Each file is downloaded (~440 MB), loaded, then deleted. Inserts
+slow down as the vector index grows, sharply once it outgrows the 1 GB cache (on a laptop with
+NVMe: 3, 5, 7, 9 and 21 minutes for the five files, 45 minutes in all). A slow last file is
+expected, not a hang: `docker logs` keeps counting paragraphs.
 
 ## 3. Watch it
 

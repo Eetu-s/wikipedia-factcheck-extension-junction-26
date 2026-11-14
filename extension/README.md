@@ -40,10 +40,12 @@ to analyze the chosen sentence.
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
 Its **×** closes the overlay and clears the scan. Navigating or switching away from the
 tab also closes it; leaving the browser window dismisses the sentence popover.
-Three fast requests run concurrently, with visible sentences prioritized and the entire
-extracted article eventually processed. Checks use the saved password with `/api/factcheck/`,
-which bypasses the public API and production proxy rate limits. Upstream model-provider
-rate limits still pause the queue with bounded retries.
+Sentences go to `/api/factcheck/batch/` in batches of 8, with up to 4 batches (32 sentences)
+in flight. Visible sentences go first, and the whole extracted article is eventually
+processed. Each answer streams back as soon as its decision finishes, so a batch never waits
+for its slowest sentence. Checks use the saved password, which bypasses the public API and
+production proxy rate limits. Upstream model-provider rate limits still pause the queue with
+bounded retries.
 Article/context changes invalidate the snapshot; appended content is checked only after
 an explicit **Rescan**. Clear, navigation, and restarting discard stale responses. Cached
 fast results include the original sentence, location, page, context, tab, and backend and
@@ -67,7 +69,7 @@ unpacked extension after updating its files. Docker startup also applies migrati
 ## Files
 
 - `manifest.json`: extension config and permissions.
-- `background.js`: adds the right-click menu item and sends `POST /api/factcheck/` to the backend.
+- `background.js`: adds the right-click menu items and sends the requests: `POST /api/factcheck/` for selections, `POST /api/factcheck/batch/` for page scans.
 - `vendor/Readability.js`: bundled Mozilla article extractor (see `vendor/README.md` for license).
 - `article.js`: article provenance, locale-aware sentences, original ranges, and snapshot validation.
 - `page-scan.js`: page queue, highlighting, cancellation, Rescan, and click-only deep analysis.
@@ -135,7 +137,24 @@ starts deep work; the action is idempotent across repeated requests. Poll
 code points into the saved original sentence and are validated without relocating phrases.
 Polling and cached results never start analysis.
 
-Retrieval includes the target and local context. Model inputs separate TARGET SENTENCE,
+Page scans use `POST /api/factcheck/batch/`, which runs the same fast check for up to 10
+sentences per request:
+
+```json
+{"password": "...", "stream": true,
+ "items": [{"text": "It was completed in 1889.", "sentence_id": "wfc-...", "context": {"...": "..."}}]}
+```
+
+The batch embeds all its retrieval queries in one Ollama call and runs the model decisions in
+parallel. With `"stream": true` the response is NDJSON: one `{"index": <item>, ...answer}`
+line per sentence, in the order the decisions finish. Each answer is the single-sentence
+response above, or `{"sentence_id", "error", "status": 429 | 502, "retry_after"}`. Each
+`check_id` is saved before its line is sent, so deeper analysis is available at once. Without
+`stream`, the response is `{"results": [...]}` in request order.
+
+The retrieval query is the target sentence plus the last 300 characters of the previous
+sentence and the first 150 of the section heading and the page title. The paragraph and next sentence go only to the model:
+a long paragraph would slow embedding and drown out the sentence. Model inputs separate TARGET SENTENCE,
 PAGE CONTEXT, and WIKIPEDIA EVIDENCE. Context may resolve a subject, pronoun, or relative
 date; it cannot serve as evidence. The local paragraph's subject takes precedence over the
 page title. Requests without `fast_only` retain the existing selection behavior.

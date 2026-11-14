@@ -12,6 +12,28 @@ Fact checking for Wikipedia articles.
 
 See [AGENTS.md](AGENTS.md) for setup and contribution conventions.
 
+## How a check works
+
+1. The claim (for page scans, the sentence plus a little page context) is embedded with
+   bge-m3 through Ollama.
+2. MariaDB Vector finds the closest Wikipedia text in two datasets: *History of Finland*
+   articles in Finnish, Swedish and English, and 500,000 paragraphs of English Wikipedia.
+   The two rankings are merged into the 3 best articles. See [rag/README.md](rag/README.md).
+3. `gemini-decision-1` decides SUPPORTED, REFUTED or NOT ENOUGH INFO from those articles only,
+   and rates which articles bear on it; those become the sources.
+4. On request, `GEMINI_EXPLAIN_MODEL` quotes the evidence and, for refuted claims, lists each
+   factual error with the correct fact.
+
+The model sees only the retrieved text, so claims about topics outside the data should get
+NOT ENOUGH INFO rather than a guess. Results further than cosine distance 0.5 are not passed on.
+
+| Endpoint | Used by |
+|---|---|
+| `POST /api/factcheck/` | extension selection checks (password) |
+| `POST /api/factcheck/batch/` | extension page scans, streamed (password) |
+| `POST /api/factcheck-ratelimit/` | website, no password, one request per second overall |
+| `GET /accuracy` | accuracy report (below) |
+
 ## Accuracy report
 
 `/accuracy` is a read-only report of the 100 true and 100 false statements in

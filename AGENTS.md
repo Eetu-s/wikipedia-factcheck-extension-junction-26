@@ -5,6 +5,7 @@
 - `backend/` — Django project (`config/` settings/urls, `factcheck/` app). API is served under `/api/`.
 - `rag/` — Wikipedia semantic search (`wikirag` package, MariaDB Vector + Ollama). The backend image includes `rag/wikirag` and uses it in `/api/factcheck/`.
 - `extension/` — browser extension frontend.
+- `web/` — public website (nginx) that serves the page and forwards `/api/` to the backend.
 - `data/` — local RAG data and indexes. Git-ignored; never commit its contents.
 
 ## Running the backend
