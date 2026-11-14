@@ -169,7 +169,6 @@ button.quiet:active { background: var(--color-paper-3); }
 .explanation .correction { gap: var(--space-sm); }
 .correction h3 { scroll-margin-top: var(--space-md); }
 .correction p { overflow-wrap: anywhere; }
-.corrected-text { padding: var(--space-xs); border-left: var(--rule-bar) solid var(--color-success); background: color-mix(in oklab, var(--color-success) 7%, var(--color-plate)); }
 .evidence { display: grid; gap: var(--space-xs); }
 .evidence-label { font-size: var(--text-sm); font-weight: 600; color: var(--color-muted); }
 .analysis-notice { padding: var(--space-xs); background: var(--color-paper-2); font-size: var(--text-sm); }

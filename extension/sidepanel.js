@@ -235,8 +235,7 @@ function renderCorrections(section, explanation) {
       heading.tabIndex = -1;
       item.append(heading,
         explanationField("Incorrect", error.original_text, "incorrect"),
-        explanationField("Why it's wrong", error.explanation),
-        explanationField("Correction", error.corrected_text, "corrected-text"));
+        el("p", "error-explanation", String(error.explanation || error.corrected_text || "")));
       const evidence = el("div", "evidence");
       evidence.append(el("span", "evidence-label", "Wikipedia evidence"));
       for (const entry of Array.isArray(error.evidence) ? error.evidence : []) {
