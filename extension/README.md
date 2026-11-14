@@ -22,6 +22,9 @@ Sentences begin with subtle gray pending highlights and update progressively:
 - **◌ Pending/checking**, **Ⅱ Stopped**, and **! Failed** have distinct labels; failed
   checks also use a wavy gray underline.
 
+Visible sentences hop up 4 pixels and settle as their verdict arrives. This animation
+respects reduced-motion preferences and leaves the article's text and layout intact.
+
 Hover shows the fast verdict, confidence, and sources. Click a completed sentence, or use
 **Open result** in the guide, to pin the result and request deeper analysis. All completed
 colors support deeper analysis. Hovering and scanning never start explanations. Repeated
@@ -151,6 +154,7 @@ npm install --prefix /tmp/wfc-tests playwright-core
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/article.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-ui.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-scan.test.cjs
+NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/scan-animation.test.cjs
 ```
 
 The browser tests default to Chrome's macOS application path. Set `CHROME_PATH` to your

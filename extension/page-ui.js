@@ -26,6 +26,8 @@
     .sources,.deep,.correction,.evidence { display:grid; gap:8px; } .sources ul,.deep ol { list-style:none; padding:0; border-top:2px solid var(--ink); } .sources li,.deep li { padding:8px 0; border-bottom:1px solid var(--rule); } .sources a { font-weight:500; } .sources .host { display:block; font:11px/1.4 ui-monospace,"SF Mono",Consolas,monospace; color:var(--muted); }
     .deep { border-top:1px solid var(--rule); padding-top:10px; } .deep p { white-space:pre-wrap; } .notice { background:var(--paper-2); padding:8px; font-size:12px; } .evidence { font-size:13px; } .evidence a { font-size:12px; } .unverified { font-size:13px; } .unverified summary { cursor:pointer; font-weight:600; } .unverified ul { padding-left:18px; margin-top:6px; } .unverified li { margin-top:5px; }
     .sr { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    .sentence-hop { position:absolute; inset:0; pointer-events:none; user-select:none; z-index:0; }
+    .sentence-hop-fragment { all:initial; position:absolute; display:block; margin:0; padding:0; border:0; white-space:pre; pointer-events:none; }
     @media(max-width:430px) { .guide { right:10px; bottom:10px; } .popover { width:calc(100vw - 24px); } }
     @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
   `;
@@ -169,6 +171,116 @@
     document.documentElement.append(host);
     let sentences = [], current = null, pinned = false, hideTimer, destroyed = false, autoCollapsed = false;
     let position = { x: 12, y: 12 }, lastGuideState = "", optionIds = "", renderKey = "", announcedSentenceState = "";
+    const hops = new Map();
+    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const textProperties = ["font-family", "font-size", "font-weight", "font-style", "font-stretch",
+      "font-variant", "font-feature-settings", "font-variation-settings", "font-kerning",
+      "font-optical-sizing", "font-synthesis", "line-height", "letter-spacing", "word-spacing",
+      "text-transform", "text-shadow", "color", "direction", "text-rendering", "-webkit-text-fill-color",
+      "-webkit-text-stroke-width", "-webkit-text-stroke-color"];
+
+    function syncHopHighlight() {
+      if (!hops.size) { globalThis.CSS?.highlights?.delete("wfc-hopping"); return; }
+      const highlight = new Highlight(...[...hops.values()].flatMap(hop => hop.ranges));
+      highlight.priority = 1;
+      CSS.highlights.set("wfc-hopping", highlight);
+    }
+    function finishHop(id) {
+      const hop = hops.get(id);
+      if (!hop) return;
+      hops.delete(id);
+      hop.animation?.cancel();
+      hop.element.remove();
+      try { syncHopHighlight(); }
+      catch { globalThis.CSS?.highlights?.delete("wfc-hopping"); }
+    }
+    function clearAnimations() {
+      for (const id of [...hops.keys()]) finishHop(id);
+    }
+    function animateSentence(sentence) {
+      if (destroyed || reducedMotion?.matches || !globalThis.CSS?.highlights || !globalThis.Highlight
+          || typeof host.animate !== "function" || hops.has(sentence.id)) return;
+      const overlay = element("div", "sentence-hop");
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.inert = true;
+      const activeRanges = [];
+      try {
+        const fragments = [];
+        for (const segment of sentence.segments || []) {
+          const source = segment.node;
+          if (!source?.isConnected || !source.parentElement) return;
+          const css = getComputedStyle(source.parentElement);
+          if (css.writingMode !== "horizontal-tb") return;
+          const range = document.createRange();
+          // Word-sized fragments retain the page's actual spacing and justification.
+          // A word normally has one rectangle; split it only if it wraps across lines.
+          for (const match of source.data.slice(segment.start, segment.end).matchAll(/\S+/gu)) {
+            let start = segment.start + match.index;
+            const end = start + match[0].length;
+            while (start < end) {
+              range.setStart(source, start);
+              range.setEnd(source, end);
+              const rects = [...range.getClientRects()].filter(rect => rect.width && rect.height);
+              if (!rects.length) break;
+              let stop = end;
+              if (rects.length > 1) {
+                let low = start + 1, high = end;
+                while (low < high) {
+                  const middle = Math.ceil((low + high) / 2);
+                  range.setEnd(source, middle);
+                  if (range.getClientRects().length <= 1) low = middle;
+                  else high = middle - 1;
+                }
+                stop = low;
+                // Keep surrogate pairs together when a long word breaks lines.
+                if (stop < end && /[\uDC00-\uDFFF]/.test(source.data[stop])) stop++;
+                range.setEnd(source, stop);
+              }
+              const rect = range.getBoundingClientRect();
+              if (rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth) {
+                fragments.push({ text: source.data.slice(start, stop), rect, css });
+                activeRanges.push(range.cloneRange());
+              }
+              start = stop;
+            }
+          }
+        }
+        if (!fragments.length) return;
+        shadow.append(overlay);
+        for (const { text, rect, css } of fragments) {
+          const fragment = element("span", "sentence-hop-fragment", text);
+          for (const property of textProperties) fragment.style.setProperty(property, css.getPropertyValue(property));
+          overlay.append(fragment);
+          // Range boxes describe glyphs, whereas positioned spans include line-height.
+          // Measuring the copy gives an exact baseline without font-specific guesses.
+          const copyRange = document.createRange();
+          copyRange.selectNodeContents(fragment);
+          const copyRect = copyRange.getBoundingClientRect();
+          fragment.style.left = rect.left - copyRect.left + "px";
+          fragment.style.top = rect.top - copyRect.top + "px";
+        }
+        const hop = { element: overlay, ranges: activeRanges, animation: null };
+        hops.set(sentence.id, hop);
+        syncHopHighlight();
+        hop.animation = overlay.animate([
+          { transform: "translateY(0)", offset: 0, easing: "cubic-bezier(.2,.7,.3,1)" },
+          { transform: "translateY(-4px)", offset: .36, easing: "cubic-bezier(.3,0,.4,1)" },
+          { transform: "translateY(0)", offset: 1 },
+        ], { duration: 360 });
+        hop.animation.onfinish = hop.animation.oncancel = () => {
+          if (hops.get(sentence.id) === hop) finishHop(sentence.id);
+        };
+      } catch {
+        // Animation is decorative: rendering trouble must never fail a fact check.
+        if (hops.has(sentence.id)) finishHop(sentence.id);
+        else overlay.remove();
+      }
+    }
+    window.addEventListener("scroll", clearAnimations, { passive: true, capture: true });
+    window.addEventListener("resize", clearAnimations);
+    window.visualViewport?.addEventListener("scroll", clearAnimations);
+    window.visualViewport?.addEventListener("resize", clearAnimations);
+    reducedMotion?.addEventListener("change", clearAnimations);
 
     function announce(text) { if (live.textContent !== text) live.textContent = text; }
     function cancelHide() { clearTimeout(hideTimer); }
@@ -407,14 +519,21 @@
     }
     function destroy() {
       destroyed = true;
+      clearAnimations();
       cancelHide();
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", clamp);
       window.visualViewport?.removeEventListener("resize", clamp);
+      window.removeEventListener("scroll", clearAnimations, true);
+      window.removeEventListener("resize", clearAnimations);
+      window.visualViewport?.removeEventListener("scroll", clearAnimations);
+      window.visualViewport?.removeEventListener("resize", clearAnimations);
+      reducedMotion?.removeEventListener("change", clearAnimations);
       host.remove();
     }
     return {
-      update, show, hide, destroy, scheduleHide, cancelHide, isPinned: () => pinned,
+      update, show, hide, destroy, animateSentence, clearAnimations,
+      scheduleHide, cancelHide, isPinned: () => pinned,
       contains: target => target === host || shadow.contains(target), host
     };
   }
