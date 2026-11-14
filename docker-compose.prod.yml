@@ -1,0 +1,80 @@
+services:
+  mariadb:
+    image: mariadb:lts
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${RAG_DB_ROOT_PASSWORD:?Set RAG_DB_ROOT_PASSWORD in .env}
+      MARIADB_DATABASE: ${RAG_DB_NAME:-wikirag}
+      MARIADB_USER: ${RAG_DB_USER:-wikirag}
+      MARIADB_PASSWORD: ${RAG_DB_PASSWORD:?Set RAG_DB_PASSWORD in .env}
+    volumes:
+      - wikirag-db:/var/lib/mysql
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ollama:
+    image: ollama/ollama:0.12.6
+    restart: unless-stopped
+    volumes:
+      - wikirag-ollama:/root/.ollama
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: ./backend
+      additional_contexts:
+        rag: ./rag
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    env_file:
+      - ./.env
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_ALLOWED_HOSTS: klausde.tech
+      DJANGO_SECURE_SSL_REDIRECT: "1"
+      DJANGO_SECURE_HSTS_SECONDS: "31536000"
+      RAG_DB_HOST: mariadb
+      RAG_DB_PORT: "3306"
+      RAG_DB_USER: ${RAG_DB_USER:-wikirag}
+      RAG_DB_PASSWORD: ${RAG_DB_PASSWORD:?Set RAG_DB_PASSWORD in .env}
+      RAG_DB_NAME: ${RAG_DB_NAME:-wikirag}
+      RAG_OLLAMA_URL: http://ollama:11434
+      RAG_DATA_DIR: /data/wikirag
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    expose:
+      - "8000"
+    volumes:
+      - ./data/wikirag:/data/wikirag:ro
+    networks:
+      - internal
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=wikipedia-factcheck-internal
+      - traefik.http.routers.wikipedia-factcheck.rule=Host(`klausde.tech`)
+      - traefik.http.routers.wikipedia-factcheck.entrypoints=websecure
+      - traefik.http.routers.wikipedia-factcheck.tls=true
+      - traefik.http.routers.wikipedia-factcheck.tls.certresolver=letsencrypt
+      - traefik.http.routers.wikipedia-factcheck.middlewares=wikipedia-factcheck-ratelimit
+      - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.average=10
+      - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.period=1m
+      - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.burst=20
+      - traefik.http.services.wikipedia-factcheck.loadbalancer.server.port=8000
+
+volumes:
+  wikirag-db:
+  wikirag-ollama:
+
+networks:
+  internal:
+    name: wikipedia-factcheck-internal
