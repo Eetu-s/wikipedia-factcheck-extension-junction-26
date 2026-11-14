@@ -20,7 +20,7 @@ const { chromium } = require("playwright-core");
       <p id="offscreen" style="margin-top:1200px">Oslo is the capital of Norway.</p>
       </article></body></html>`);
     await page.evaluate(() => {
-      window.mock = { requests: [], batches: [], deepStarts: 0, nextId: 0 };
+      window.mock = { requests: [], deepStarts: 0, nextId: 0 };
       window.hops = [];
       const animate = Element.prototype.animate;
       Element.prototype.animate = function (...args) {
@@ -34,20 +34,14 @@ const { chromium } = require("playwright-core");
       window.chrome = { runtime: {
         onMessage: { addListener(listener) { mock.onMessage = listener; } },
         sendMessage: async (message) => {
-          if (message.type === "WFC_FAST_BATCH") return new Promise(resolve => {
-            const batch = { remaining: message.items.length, closed: false };
-            mock.batches.push(batch);
-            for (const item of message.items) {
-              const request = { message: { ...message, ...item }, batch, finished: false };
-              request.resolve = answer => {
-                if (request.finished) return;
-                request.finished = true;
-                mock.onMessage({ type: "WFC_FAST_ITEM", scanId: message.scanId, requestId: message.requestId,
-                  sentenceId: item.sentenceId, answer }, {}, () => {});
-                if (!--batch.remaining) { batch.closed = true; resolve({}); }
-              };
-              mock.requests.push(request);
-            }
+          if (message.type === "WFC_FAST") return new Promise(resolve => {
+            const request = { message, finished: false };
+            request.resolve = answer => {
+              if (request.finished) return;
+              request.finished = true;
+              resolve(answer);
+            };
+            mock.requests.push(request);
           });
           if (message.type === "WFC_DEEP_START") {
             mock.deepStarts++;
@@ -71,7 +65,6 @@ const { chromium } = require("playwright-core");
       await page.evaluate(async () => {
         await WikiFactPageScan.clear();
         mock.requests = [];
-        mock.batches = [];
         hops = [];
         await WikiFactPageScan.start();
       });
@@ -94,9 +87,9 @@ const { chromium } = require("playwright-core");
     await finish("Eiffel Tower");
     await overlays.waitFor({ state: "attached" });
     assert.equal(await page.evaluate(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"))), 1,
-      "a streamed sentence is painted before its batch finishes");
-    assert.equal(await page.evaluate(() => mock.requests.find(request => request.message.text.includes("Eiffel Tower")).batch.closed), false,
-      "the hop starts while slower sentences in its batch are still pending");
+      "a ready sentence is painted independently of the other requests");
+    assert.ok(await page.evaluate(() => mock.requests.some(request => !request.finished)),
+      "the hop starts while slower sentence requests are still pending");
     const appearance = await overlays.evaluate(node => ({
       text: node.textContent,
       pointerEvents: getComputedStyle(node).pointerEvents,
