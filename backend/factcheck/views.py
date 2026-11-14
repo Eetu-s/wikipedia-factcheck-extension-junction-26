@@ -1,10 +1,13 @@
 import json
+from dataclasses import asdict
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
+
+from .checker import check
 
 
 @require_GET
@@ -15,6 +18,12 @@ def health(request):
 @csrf_exempt  # Called by the extension with a password, not a browser session.
 @require_POST
 def factcheck(request):
+    """
+    Request:  {"text": str, "password": str}
+    Response: {"decision": "SUPPORTED" | "REFUTED" | "NOT ENOUGH INFO",
+               "confidence": float (0.0–1.0),
+               "sources": [str, ...]}  # source URLs
+    """
     try:
         body = json.loads(request.body)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -32,5 +41,4 @@ def factcheck(request):
     if not isinstance(text, str) or not text.strip():
         return JsonResponse({"error": "'text' must be a non-empty string."}, status=400)
 
-    # TODO: run the actual fact check.
-    return JsonResponse({"text": text, "result": None})
+    return JsonResponse(asdict(check(text)))
