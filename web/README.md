@@ -13,7 +13,11 @@ The extension's fact-check as a web page. Type or paste a claim, press **Fact-ch
 docker compose up --build        # website at http://localhost:8080
 ```
 
-In development `web/public/` is bind-mounted, so edits show on reload. In production (`docker-compose.prod.yml`) Traefik sends the whole host to this service, with the rate-limit middleware, and nginx forwards the API paths to the backend.
+In development `web/public/` is bind-mounted, so edits show on reload. In production
+(`docker-compose.prod.yml`) Traefik sends the whole host to this service, and nginx forwards
+the API paths to the backend. The password endpoint `/api/factcheck/` and its explanation
+and analysis routes bypass Traefik's rate limiter. The public endpoint
+`/api/factcheck-ratelimit/` retains both proxy and Django rate limits.
 
 ## No password
 

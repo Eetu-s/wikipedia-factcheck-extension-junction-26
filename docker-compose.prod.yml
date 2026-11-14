@@ -80,9 +80,9 @@ services:
       - traefik.http.routers.wikipedia-factcheck.entrypoints=websecure
       - traefik.http.routers.wikipedia-factcheck.tls=true
       - traefik.http.routers.wikipedia-factcheck.tls.certresolver=letsencrypt
-      # Page and static files: no rate limit (one page load is about six requests).
-      # The API and admin: the rate limit below. The longer rule wins, so these paths match this router.
-      - traefik.http.routers.wikipedia-factcheck-api.rule=Host(`klausde.tech`) && (PathPrefix(`/api/`) || PathPrefix(`/admin/`))
+      # Page/static files and password-authenticated checks/polls have no proxy rate limit.
+      # Public API and admin paths use the longer, rate-limited rule below.
+      - traefik.http.routers.wikipedia-factcheck-api.rule=Host(`klausde.tech`) && ((PathPrefix(`/api/`) && !PathPrefix(`/api/factcheck/`)) || PathPrefix(`/admin/`))
       - traefik.http.routers.wikipedia-factcheck-api.entrypoints=websecure
       - traefik.http.routers.wikipedia-factcheck-api.tls=true
       - traefik.http.routers.wikipedia-factcheck-api.tls.certresolver=letsencrypt

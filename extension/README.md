@@ -32,7 +32,9 @@ to analyze the chosen sentence.
 
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
 Three fast requests run concurrently, with visible sentences prioritized and the entire
-extracted article eventually processed. Rate limits pause the queue with bounded retries.
+extracted article eventually processed. Checks use the saved password with `/api/factcheck/`,
+which bypasses the public API and production proxy rate limits. Upstream model-provider
+rate limits still pause the queue with bounded retries.
 Article/context changes invalidate the snapshot; appended content is checked only after
 an explicit **Rescan**. Clear, navigation, and restarting discard stale responses. Cached
 fast results include the original sentence, location, page, context, tab, and backend and
