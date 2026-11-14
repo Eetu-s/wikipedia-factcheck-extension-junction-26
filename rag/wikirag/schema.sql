@@ -45,3 +45,34 @@ CREATE TABLE IF NOT EXISTS article_category (
   PRIMARY KEY (lang, page_id, category),
   KEY (category)
 ) CHARACTER SET utf8mb4;
+
+-- Paragraphs with ready-made bge-m3 vectors, from Upstash/wikipedia-2024-06-bge-m3 (English,
+-- June 2024). Loaded by: python -m wikirag.upstash. One vector per paragraph finds single facts
+-- that one vector per article (article_vector) misses in long articles.
+CREATE TABLE IF NOT EXISTS chunk (
+  lang     CHAR(2)           NOT NULL,
+  page_id  INT UNSIGNED      NOT NULL,      -- Wikipedia's own id, per language
+  seq      SMALLINT UNSIGNED NOT NULL,      -- paragraph number within the article
+  title    VARCHAR(255)      NOT NULL,
+  url      VARCHAR(500)      NOT NULL,
+  text     MEDIUMTEXT        NOT NULL,
+  PRIMARY KEY (lang, page_id, seq)
+) CHARACTER SET utf8mb4;
+
+-- Kept apart from chunk for the same reason as article_vector: the vector search must run on
+-- this table alone for MariaDB to use the index.
+CREATE TABLE IF NOT EXISTS chunk_vector (
+  lang       CHAR(2)           NOT NULL,
+  page_id    INT UNSIGNED      NOT NULL,
+  seq        SMALLINT UNSIGNED NOT NULL,
+  embedding  VECTOR(1024)      NOT NULL,
+  PRIMARY KEY (lang, page_id, seq),
+  VECTOR INDEX (embedding) M=16 DISTANCE=cosine
+);
+
+-- Source files already loaded into chunk, so an interrupted load resumes where it stopped.
+CREATE TABLE IF NOT EXISTS loaded_file (
+  name       VARCHAR(255) NOT NULL PRIMARY KEY,
+  row_count  INT UNSIGNED NOT NULL,
+  loaded_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

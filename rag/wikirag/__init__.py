@@ -7,6 +7,6 @@
 """
 from .embedding import EmbeddingError, embed
 from .formatting import format_results, results_to_dict
-from .search import semantic_search
+from .search import chunk_search, semantic_search
 
-__all__ = ["semantic_search", "format_results", "results_to_dict", "embed", "EmbeddingError"]
+__all__ = ["semantic_search", "chunk_search", "format_results", "results_to_dict", "embed", "EmbeddingError"]

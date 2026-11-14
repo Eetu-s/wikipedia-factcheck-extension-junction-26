@@ -24,7 +24,7 @@ def results_to_dict(rows, query=None, lang=None, category=None, full=True,
             "title": r["title"],
             "lang": r["lang"],
             "page_id": r["page_id"],
-            "wikidata_id": r["wikidata_id"],
+            "wikidata_id": r.get("wikidata_id"),
             "url": r["url"],
             "distance": r["distance"],
             "other_languages": [
@@ -32,6 +32,8 @@ def results_to_dict(rows, query=None, lang=None, category=None, full=True,
                 for l, title, url in (r.get("other_languages") or [])
             ],
         }
+        if "matched" in r:  # paragraph search: which paragraphs matched
+            item["matched"] = r["matched"]
         if "text" in r:
             item["text"], item["truncated"] = _excerpt(
                 r["text"] or "", None if full else excerpt_chars)
