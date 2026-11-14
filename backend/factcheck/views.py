@@ -65,7 +65,8 @@ def factcheck(request):
 def explanation(request, explanation_id):
     """
     Waits up to EXPLANATION_WAIT_SECONDS for the explanation, then returns one of:
-      {"status": "done", "paragraphs": [{"source": str, "paragraph": str}, ...]}
+      {"status": "done", "paragraphs": [{"source": str, "paragraph": str}, ...],
+       "errors": [...], "unverified_facts": [...], "incomplete": bool}  # analysis for refuted
       {"status": "pending"}                   # not ready yet: ask again
       {"status": "error", "error": str}
     The id is a random UUID that only the client who ran the check has, so no password is needed.
@@ -76,7 +77,7 @@ def explanation(request, explanation_id):
         if row is None:
             return JsonResponse({"error": "Unknown explanation id."}, status=404)
         if row.status == Explanation.Status.DONE:
-            return JsonResponse({"status": row.status, "paragraphs": row.paragraphs})
+            return JsonResponse({"status": row.status, "paragraphs": row.paragraphs, **row.analysis})
         if row.status == Explanation.Status.ERROR:
             return JsonResponse({"status": row.status, "error": row.error})
         if time.monotonic() >= deadline:

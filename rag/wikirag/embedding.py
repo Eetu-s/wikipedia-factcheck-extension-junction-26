@@ -11,12 +11,12 @@ class EmbeddingError(RuntimeError):
 _session = requests.Session()
 
 
-def embed_many(texts, truncate=True):
+def embed_many(texts, truncate=True, timeout=None):
     """Vectors for a list of texts. With truncate=False Ollama refuses over-long input."""
     try:
         r = _session.post(
             f"{config.OLLAMA_URL}/api/embed",
-            timeout=config.EMBED_TIMEOUT,
+            timeout=config.EMBED_TIMEOUT if timeout is None else timeout,
             json={
                 "model": config.EMBED_MODEL,
                 "input": list(texts),
@@ -31,7 +31,7 @@ def embed_many(texts, truncate=True):
     return r.json()["embeddings"]
 
 
-def embed(text):
+def embed(text, timeout=None):
     """One vector (a list of 1024 floats) for one question or statement."""
-    [vector] = embed_many([text])
+    [vector] = embed_many([text], timeout=timeout)
     return vector

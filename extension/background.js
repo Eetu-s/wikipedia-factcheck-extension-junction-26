@@ -102,7 +102,17 @@ async function fetchExplanation(id) {
       return { status: "error", error: data.error || "Backend error (HTTP " + response.status + ")" };
     }
     if (data.status === "done") {
-      return { status: "done", paragraphs: Array.isArray(data.paragraphs) ? data.paragraphs : [] };
+      const explanation = {
+        status: "done",
+        paragraphs: Array.isArray(data.paragraphs) ? data.paragraphs : [],
+      };
+      // Keep errors absent for older backends so the panel can render their quote-only response.
+      if (Array.isArray(data.errors)) {
+        explanation.errors = data.errors;
+        explanation.unverified_facts = Array.isArray(data.unverified_facts) ? data.unverified_facts : [];
+        explanation.incomplete = data.incomplete === true;
+      }
+      return explanation;
     }
     if (data.status === "error") return { status: "error", error: data.error || "Explanation failed." };
     // "pending": ask again.

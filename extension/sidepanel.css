@@ -158,7 +158,24 @@ button.quiet:active { background: var(--color-paper-3); }
 .sources .host { font-family: var(--font-outlier); font-size: var(--text-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .sources .none { color: var(--color-muted); font-size: var(--text-sm); }
 
-/* ---------- explanation: the source paragraphs behind the verdict ---------- */
+/* ---------- explanation and factual corrections ---------- */
+
+.claim .factual-error {
+  color: var(--color-ink);
+  background: color-mix(in oklab, var(--verdict-refuted) 15%, var(--color-plate));
+  border-bottom: var(--rule-bar) solid var(--verdict-refuted);
+}
+.error-reference { margin-inline-start: var(--space-3xs); font-size: var(--text-xs); font-weight: 700; vertical-align: super; }
+.explanation .correction { gap: var(--space-sm); }
+.correction h3 { scroll-margin-top: var(--space-md); }
+.correction p { overflow-wrap: anywhere; }
+.corrected-text { padding: var(--space-xs); border-left: var(--rule-bar) solid var(--color-success); background: color-mix(in oklab, var(--color-success) 7%, var(--color-plate)); }
+.evidence { display: grid; gap: var(--space-xs); }
+.evidence-label { font-size: var(--text-sm); font-weight: 600; color: var(--color-muted); }
+.analysis-notice { padding: var(--space-xs); background: var(--color-paper-2); font-size: var(--text-sm); }
+.unverified { font-size: var(--text-sm); }
+.unverified summary { cursor: pointer; font-weight: 500; }
+.unverified ul { margin: var(--space-xs) 0 0; padding: 0; list-style: none; }
 
 .explanation { display: grid; gap: var(--space-xs); }
 .explanation ol { margin: 0; padding: 0; list-style: none; border-top: var(--rule-bar) solid var(--color-ink); }

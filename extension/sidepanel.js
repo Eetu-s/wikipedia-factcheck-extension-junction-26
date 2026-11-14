@@ -88,7 +88,7 @@ function sourceItem(source) {
 }
 
 // The nodes for one source: [link, host], or [plain text] when it isn't an http(s) URL.
-function sourceLink(source) {
+function sourceLink(source, articleTitle) {
   let url;
   try {
     url = new URL(source);
@@ -107,16 +107,51 @@ function sourceLink(source) {
       title = match[1].replace(/_/g, " ");
     }
   }
-  const link = el("a", null, title);
+  const link = el("a", null, articleTitle || title);
   link.href = url.href;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
   return [link, el("span", "host", url.hostname)];
 }
 
-function renderClaim(text) {
+function renderClaim(text, errors = []) {
   const claim = el("div", "claim");
-  claim.append(el("span", "label", "Claim"), el("blockquote", null, text));
+  const quote = el("blockquote");
+  // Backend offsets count Unicode code points, not JavaScript UTF-16 code units.
+  const characters = Array.from(text);
+  const ranges = [];
+  errors.forEach((error, index) => {
+    if (!error || !Number.isInteger(error.start) || !Number.isInteger(error.end)
+        || error.start < 0 || error.end <= error.start || error.end > characters.length
+        || characters.slice(error.start, error.end).join("") !== error.original_text) return;
+    ranges.push({ start: error.start, end: error.end, numbers: [index + 1] });
+  });
+  ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start < previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+      previous.numbers.push(...range.numbers);
+    } else {
+      merged.push({ ...range, numbers: [...range.numbers] });
+    }
+  }
+  let cursor = 0;
+  for (const range of merged) {
+    quote.append(document.createTextNode(characters.slice(cursor, range.start).join("")));
+    const mark = el("mark", "factual-error", characters.slice(range.start, range.end).join(""));
+    for (const number of range.numbers.sort((a, b) => a - b)) {
+      const reference = el("a", "error-reference", `[${number}]`);
+      reference.href = "#factual-error-" + number;
+      reference.setAttribute("aria-label", "Read explanation for factual error " + number);
+      mark.append(reference);
+    }
+    quote.append(mark);
+    cursor = range.end;
+  }
+  quote.append(document.createTextNode(characters.slice(cursor).join("")));
+  claim.append(el("span", "label", "Claim"), quote);
   return claim;
 }
 
@@ -124,7 +159,9 @@ function renderDone(job) {
   const result = job.result;
   const plate = el("section", "plate");
   plate.setAttribute("aria-label", "Fact-check result");
-  plate.append(renderClaim(job.text));
+  const errors = result?.decision === "REFUTED" && Array.isArray(job.explanation?.errors)
+    ? job.explanation.errors : [];
+  plate.append(renderClaim(job.text, errors));
 
   // The response format is { decision, confidence, sources }. If it ever changes shape, show it raw.
   if (!result || typeof result.decision !== "string") {
@@ -158,6 +195,9 @@ function renderDone(job) {
     plate.append(confidence);
   }
 
+  // Show deeper-analysis progress directly below the fast verdict and confidence.
+  if (job.explanation) plate.append(renderExplanation(result.decision, job.explanation));
+
   const sources = el("div", "sources");
   sources.append(el("h2", null, "Sources"));
   const list = Array.isArray(result.sources) ? result.sources : [];
@@ -170,12 +210,62 @@ function renderDone(job) {
   }
   plate.append(sources);
 
-  // Sent by the backend after the verdict; absent for "Not enough info".
-  if (job.explanation) plate.append(renderExplanation(result.decision, job.explanation));
   return plate;
 }
 
-// The paragraphs from the sources that give the verdict, one per source.
+function explanationField(label, text, className) {
+  const field = el("p", className);
+  field.append(el("strong", null, label + ": "), document.createTextNode(String(text ?? "")));
+  return field;
+}
+
+function renderCorrections(section, explanation) {
+  const errors = explanation.errors;
+  if (explanation.incomplete) {
+    section.append(el("p", "analysis-notice", "This deeper analysis is incomplete. The findings below cover only the facts that could be assessed."));
+  }
+  if (errors.length === 0) {
+    section.append(el("p", "none", "The deeper analysis could not substantiate the initial refuted verdict with a Wikipedia-backed correction."));
+  } else {
+    const list = el("ol", "corrections");
+    errors.forEach((error, index) => {
+      const item = el("li", "correction");
+      const heading = el("h3", null, "Factual error " + (index + 1));
+      heading.id = "factual-error-" + (index + 1);
+      heading.tabIndex = -1;
+      item.append(heading,
+        explanationField("Incorrect", error.original_text, "incorrect"),
+        explanationField("Why it's wrong", error.explanation),
+        explanationField("Correction", error.corrected_text, "corrected-text"));
+      const evidence = el("div", "evidence");
+      evidence.append(el("span", "evidence-label", "Wikipedia evidence"));
+      for (const entry of Array.isArray(error.evidence) ? error.evidence : []) {
+        const quote = el("blockquote", null, String(entry.quote ?? ""));
+        const cite = el("div", "cite");
+        cite.append(...sourceLink(entry.source, entry.title));
+        evidence.append(quote, cite);
+      }
+      item.append(evidence);
+      list.append(item);
+    });
+    section.append(list);
+  }
+  const unverified = Array.isArray(explanation.unverified_facts) ? explanation.unverified_facts : [];
+  if (unverified.length) {
+    const details = el("details", "unverified");
+    details.append(el("summary", null, "Facts that could not be fully verified (" + unverified.length + ")"));
+    const list = el("ul");
+    for (const fact of unverified) {
+      const item = el("li");
+      item.append(el("blockquote", null, String(fact.text ?? "")), el("p", "none", String(fact.reason ?? "")));
+      list.append(item);
+    }
+    details.append(list);
+    section.append(details);
+  }
+}
+
+// Refuted results get individual corrections; older responses and supported results use quotes.
 function renderExplanation(decision, explanation) {
   const section = el("div", "explanation");
   section.dataset.decision = decision;
@@ -183,14 +273,22 @@ function renderExplanation(decision, explanation) {
   section.append(el("h2", null, heading));
 
   if (explanation.status === "loading") {
+    section.setAttribute("aria-busy", "true");
     const skeleton = el("div", "skeleton");
     skeleton.setAttribute("aria-hidden", "true");
     skeleton.append(el("span"), el("span"), el("span"));
-    section.append(skeleton, el("p", "status", "Finding the paragraphs behind the verdict…"));
+    const message = decision === "REFUTED"
+      ? "Analyzing factual errors and finding Wikipedia-backed corrections…"
+      : "Finding the paragraphs behind the verdict…";
+    section.append(skeleton, el("p", "status", message));
     return section;
   }
   if (explanation.status === "error") {
-    section.append(el("p", "none", "No explanation: " + explanation.error));
+    section.append(el("p", "none", "The deeper analysis could not be completed: " + explanation.error));
+    return section;
+  }
+  if (decision === "REFUTED" && Array.isArray(explanation.errors)) {
+    renderCorrections(section, explanation);
     return section;
   }
   const paragraphs = Array.isArray(explanation.paragraphs) ? explanation.paragraphs : [];
