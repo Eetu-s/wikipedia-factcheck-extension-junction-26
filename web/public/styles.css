@@ -55,7 +55,7 @@ input:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
 
-button {
+button, .button {
   min-height: var(--control-h);
   padding: var(--space-xs) var(--space-lg);
   border: var(--rule-bar) solid var(--color-ink);
@@ -67,14 +67,15 @@ button {
   cursor: pointer;
   transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
 }
-button:hover { background: var(--color-ink-2); border-color: var(--color-ink-2); }
-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-button:active { background: var(--color-ink); border-color: var(--color-ink); transform: translateY(1px); }
+.button { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+button:hover, .button:hover { background: var(--color-ink-2); border-color: var(--color-ink-2); }
+button:focus-visible, .button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+button:active, .button:active { background: var(--color-ink); border-color: var(--color-ink); transform: translateY(1px); }
 button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 
-button.quiet { background: transparent; color: var(--color-ink); }
-button.quiet:hover { background: var(--color-paper-2); border-color: var(--color-ink); }
-button.quiet:active { background: var(--color-paper-3); }
+button.quiet, .button.quiet { background: transparent; color: var(--color-ink); }
+button.quiet:hover, .button.quiet:hover { background: var(--color-paper-2); border-color: var(--color-ink); }
+button.quiet:active, .button.quiet:active { background: var(--color-paper-3); }
 
 @media (pointer: coarse) {
   :root { --control-h: 48px; }
