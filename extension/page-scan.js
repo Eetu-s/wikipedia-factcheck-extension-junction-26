@@ -2,7 +2,11 @@
  * mutation observers invalidate it but never enqueue newly loaded text. */
 (() => {
   if (globalThis.WikiFactPageScan) return;
-  const CONCURRENCY = 3;
+  // Sentences go to the backend in batches: one request checks up to BATCH_SIZE sentences
+  // (one password check, one embedding call and one database write on the server).
+  // CONCURRENCY is the number of batches in flight.
+  const CONCURRENCY = 2;
+  const BATCH_SIZE = 8;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
   let scan = null;
@@ -116,15 +120,17 @@
     // Re-evaluate priority as the reader scrolls; every sentence remains in this finite queue.
     pending.sort((a, b) => Number(visible(b)) - Number(visible(a)) || a.index - b.index);
     while (current.active < CONCURRENCY && pending.length) {
-      const sentence = pending.shift();
-      if (!valid(sentence)) {
+      const batch = pending.splice(0, BATCH_SIZE);
+      if (!batch.every(valid)) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
         return;
       }
-      sentence.status = "running";
-      const version = ++sentence.version;
+      const versions = batch.map((sentence) => {
+        sentence.status = "running";
+        return ++sentence.version;
+      });
       current.active++;
-      fastCheck(current, sentence, version).finally(() => {
+      fastBatch(current, batch, versions).finally(() => {
         current.active--;
         if (live(current)) { refresh(); pump(current); }
       });
@@ -134,11 +140,24 @@
     refresh();
   }
 
-  async function fastCheck(current, sentence, version) {
+  async function fastBatch(current, batch, versions) {
+    let response;
     try {
-      const response = await send("WFC_FAST", {
-        sentenceId: sentence.id, text: sentence.text, context: sentence.context,
+      response = await send("WFC_FAST_BATCH", {
+        items: batch.map((sentence) => ({ sentenceId: sentence.id, text: sentence.text, context: sentence.context })),
       }, current);
+    } catch (error) {
+      response = { error: error.message };
+    }
+    // A stale scan or a failure of the whole request applies to every sentence in the batch.
+    const answers = Array.isArray(response?.results) && response.results.length === batch.length
+      ? response.results : batch.map(() => response);
+    batch.forEach((sentence, index) => applyFast(current, sentence, versions[index], answers[index]));
+  }
+
+  // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
+  function applyFast(current, sentence, version, response) {
+    try {
       if (!live(current) || current.stopped || sentence.status !== "running" || sentence.version !== version) return;
       if (!valid(sentence)) return invalidate(current, "Article text changed. Choose Rescan.");
       if (response?.stale) return invalidate(current, "The page changed. Choose Rescan.");

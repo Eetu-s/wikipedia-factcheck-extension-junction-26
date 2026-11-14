@@ -3,6 +3,7 @@ import logging
 import math
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -10,6 +11,7 @@ import pymysql
 from django.conf import settings
 from wikirag import EmbeddingError, semantic_search
 from wikirag.db import connect
+from wikirag.embedding import embed_many
 
 from .context import CONTEXT_RULES, context_input, retrieval_query
 
@@ -73,7 +75,35 @@ CHOICE_TO_DECISION = {
 
 def check(text: str, context: dict | None = None) -> tuple[FactCheckResult, list[dict]]:
     """The verdict and its explanation articles ([{"title", "url", "text"}, ...])."""
-    articles = search_wikipedia(retrieval_query(text, context))
+    return decide(text, search_wikipedia(retrieval_query(text, context)), context)
+
+
+# Gemini decision calls run in parallel within one batch; they mostly wait on the network.
+BATCH_DECISION_WORKERS = 8
+
+
+def check_many(items: list[tuple[str, dict | None]]) -> list:
+    """check() for several (text, context) pairs, sharing the expensive steps.
+
+    All retrieval queries are embedded in one Ollama call and searched over one database
+    connection; the Gemini decisions then run in parallel. Returns one entry per item, in order:
+    (FactCheckResult, articles), or the CheckerError for that item. Errors that affect every item
+    (RAG database or Ollama down) are raised instead.
+    """
+    article_lists = search_wikipedia_many([retrieval_query(text, context) for text, context in items])
+
+    def one(item, articles):
+        try:
+            return decide(item[0], articles, item[1])
+        except CheckerError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=min(BATCH_DECISION_WORKERS, len(items))) as pool:
+        return list(pool.map(one, items, article_lists))
+
+
+def decide(text: str, articles: list[dict], context: dict | None) -> tuple[FactCheckResult, list[dict]]:
+    """The Gemini verdict for `text`, given the articles retrieval found for it."""
     if not articles:
         return FactCheckResult(decision=Decision.NOT_ENOUGH_INFO, confidence=0.0), []
     answers = ask_gemini(text, articles, context) if context else ask_gemini(text, articles)
@@ -101,27 +131,40 @@ def check(text: str, context: dict | None = None) -> tuple[FactCheckResult, list
 
 def search_wikipedia(claim: str) -> list[dict]:
     """The closest Wikipedia articles from the RAG database: [{"title", "url", "text"}, ...]."""
+    return search_wikipedia_many([claim])[0]
+
+
+def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
+    """search_wikipedia() for several claims: one embedding call and one database connection."""
+    try:
+        vectors = embed_many(claims)
+    except EmbeddingError as e:
+        raise CheckerError(str(e)) from e
     try:
         con = connect()
     except pymysql.MySQLError as e:
         raise CheckerError(f"Can't reach the RAG database: {e}") from e
     try:
-        rows = semantic_search(con.cursor(), claim, limit=RAG_ARTICLES)
-    except EmbeddingError as e:
-        raise CheckerError(str(e)) from e
+        cursor = con.cursor()
+        results = [
+            semantic_search(cursor, claim, limit=RAG_ARTICLES, vector=vector)
+            for claim, vector in zip(claims, vectors)
+        ]
     except pymysql.MySQLError as e:
         raise CheckerError(f"RAG search failed: {e}") from e
     finally:
         con.close()
-    # Cosine distance of each result (smaller is closer), useful for tuning the search.
-    logger.debug(
-        "RAG results for %r:%s",
-        claim,
-        "".join(f"\n  {r['distance']:.4f}  [{r['lang']}] {r['title']}" for r in rows),
-    )
+    for claim, rows in zip(claims, results):
+        # Cosine distance of each result (smaller is closer), useful for tuning the search.
+        logger.debug(
+            "RAG results for %r:%s",
+            claim,
+            "".join(f"\n  {r['distance']:.4f}  [{r['lang']}] {r['title']}" for r in rows),
+        )
     return [
-        {"title": r["title"], "url": r["url"], "text": (r["text"] or "")[:RAG_ARTICLE_CHARS]}
-        for r in rows
+        [{"title": r["title"], "url": r["url"], "text": (r["text"] or "")[:RAG_ARTICLE_CHARS]}
+         for r in rows]
+        for rows in results
     ]
 
 

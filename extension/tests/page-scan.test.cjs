@@ -24,10 +24,13 @@ const { chromium } = require("playwright-core");
           mock.messages.push(message);
           if (message.type === "WFC_SCAN_CANCEL" && message.kind === "fast" && mock.holdCancel)
             return new Promise(resolve => { mock.releaseCancel = resolve; });
-          if (message.type === "WFC_FAST") {
+          if (message.type === "WFC_FAST_BATCH") {
             if (mock.rateOnce) { mock.rateOnce = false; return { error: "Rate limited", status: 429, retryAfter: 1000 }; }
-            if (mock.auto) return { result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } };
-            return new Promise(resolve => mock.requests.push({ message, resolve, finished: false }));
+            if (mock.auto) return { results: message.items.map(() => ({ result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } })) };
+            // One pending request per sentence; the batch answers once all of them are resolved.
+            return Promise.all(message.items.map(item => new Promise(resolve =>
+              mock.requests.push({ message: { ...message, ...item }, resolve, finished: false }))))
+              .then(answers => ({ results: answers }));
           }
           if (message.type === "WFC_DEEP_START") {
             mock.deepStarts++;
@@ -47,7 +50,7 @@ const { chromium } = require("playwright-core");
     // Start while reading the middle: these visible targets must beat earlier offscreen ones.
     await page.locator("#p7").scrollIntoViewIfNeeded();
     await page.evaluate(() => WikiFactPageScan.start());
-    await page.waitForFunction(() => mock.requests.length === 3);
+    await page.waitForFunction(() => mock.requests.length >= 8);
     const first = await page.evaluate(() => mock.requests.map(r => r.message.text));
     assert.ok(first.some(text => /Tower [678]/.test(text)), "Visible targets get priority");
     assert.equal(await page.evaluate(() => mock.deepStarts), 0);
@@ -68,7 +71,7 @@ const { chromium } = require("playwright-core");
     for (let i = 0; i < count; i++) {
       await finishBatch();
       const active = await page.evaluate(() => mock.requests.filter(r => !r.finished).length);
-      assert.ok(active <= 3, "Fast concurrency stays bounded");
+      assert.ok(active <= 16, "Fast concurrency stays bounded (2 batches of 8)");
       if (await page.locator('[data-wfc-ui] progress').getAttribute("value") === String(count)) break;
     }
     assert.equal(await page.evaluate(() => mock.requests.length), count);
@@ -108,7 +111,7 @@ const { chromium } = require("playwright-core");
 
     // Stop and Clear ignore responses from earlier scans, rather than repainting stale ranges.
     await page.evaluate(() => { mock.auto = false; return WikiFactPageScan.start(); });
-    await page.waitForFunction((n) => mock.requests.length >= n + 3, before);
+    await page.waitForFunction((n) => mock.requests.length >= n + 1, before);
     await page.evaluate(() => WikiFactPageScan.stop());
     await finishBatch();
     assert.equal(await page.evaluate(() => CSS.highlights.get("wfc-supported").size), 0);
@@ -138,10 +141,10 @@ const { chromium } = require("playwright-core");
     // Failed checks can be explicitly retried; a 429 pauses and retries the bounded queue.
     await page.evaluate(() => WikiFactPageScan.clear());
     await page.evaluate(() => { mock.auto = false; mock.rateOnce = true; return WikiFactPageScan.start(); });
-    await page.waitForFunction(() => mock.messages.some(m => m.type === "WFC_FAST"));
-    const fastAtRate = await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST").length);
+    await page.waitForFunction(() => mock.messages.some(m => m.type === "WFC_FAST_BATCH"));
+    const fastAtRate = await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST_BATCH").length);
     await page.waitForTimeout(150);
-    assert.equal(await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST").length), fastAtRate, "Rate limit imposes shared cooldown");
+    assert.equal(await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST_BATCH").length), fastAtRate, "Rate limit imposes shared cooldown");
     await page.waitForTimeout(1050);
     await page.evaluate(() => {
       for (const request of mock.requests) if (!request.finished) { request.finished = true; request.resolve({ error: "Test backend failure", status: 502 }); }
