@@ -272,6 +272,15 @@ function renderExplanation(decision, explanation) {
   section.append(el("h2", null, heading));
 
   if (explanation.status === "loading") {
+    const waited = Date.now() - (explanation.startedAt ?? panelOpenedAt);
+    if (waited >= EXPLANATION_TIMEOUT_MS) {
+      // Gave up waiting: show the same message as when nothing was found.
+      explanation = { status: "done", paragraphs: [] };
+    } else {
+      scheduleRerender(EXPLANATION_TIMEOUT_MS - waited);
+    }
+  }
+  if (explanation.status === "loading") {
     section.setAttribute("aria-busy", "true");
     const skeleton = el("div", "skeleton");
     skeleton.setAttribute("aria-hidden", "true");
@@ -334,7 +343,23 @@ function renderEmpty() {
   return empty;
 }
 
+// How long the panel shows the explanation as loading before it gives up.
+// If the explanation arrives later anyway, it still replaces the "nothing found" message.
+const EXPLANATION_TIMEOUT_MS = 25_000;
+// Fallback start time for jobs saved before startedAt existed.
+const panelOpenedAt = Date.now();
+let rerenderTimer;
+
+// Render the current job again after `ms`, e.g. when the explanation timeout runs out.
+function scheduleRerender(ms) {
+  clearTimeout(rerenderTimer);
+  rerenderTimer = setTimeout(() => {
+    chrome.storage.session.get("job").then(({ job }) => showJob(job));
+  }, ms);
+}
+
 function showJob(job) {
+  clearTimeout(rerenderTimer);
   // Also show errors (e.g. "Wrong password") above the login form.
   loginError.textContent = job?.status === "error" ? job.error : "";
   resultEl.replaceChildren();
