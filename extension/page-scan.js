@@ -28,10 +28,13 @@
     renderFrame = requestAnimationFrame(() => {
       renderFrame = 0;
       if (!scan) return;
+      // Failed checks (links, captions and other text the backend can't check) are simply not
+      // shown: no highlight, not counted, not listed.
+      const shown = scan.sentences.filter((s) => s.status !== "failed");
       const groups = Object.fromEntries(names.map((name) => [name, []]));
-      for (const sentence of scan.sentences) {
+      for (const sentence of shown) {
         if (scan.invalid) continue;
-        const group = sentence.status === "failed" ? "failed" : sentence.status !== "done" ? "pending" :
+        const group = sentence.status !== "done" ? "pending" :
           sentence.result.decision === "SUPPORTED" ? "supported" :
             sentence.result.decision === "REFUTED" ? "refuted" : "uncertain";
         groups[group].push(...ranges(sentence));
@@ -39,10 +42,8 @@
       if (globalThis.CSS?.highlights && globalThis.Highlight) {
         for (const name of names) CSS.highlights.set("wfc-" + name, new Highlight(...groups[name]));
       }
-      const completed = scan.sentences.filter((s) => s.status === "done" || s.status === "failed").length;
-      scan.ui.update(scan.sentences, {
-        total: scan.sentences.length, completed,
-        failed: scan.sentences.filter((s) => s.status === "failed").length,
+      scan.ui.update(shown, {
+        total: shown.length, completed: shown.filter((s) => s.status === "done").length, failed: 0,
         stopped: scan.stopped, changed: scan.changed, error: scan.error,
       });
     });
@@ -276,7 +277,7 @@
     const offset = caret?.offset ?? legacy?.startOffset;
     if (!node) return null;
     for (const sentence of scan.byNode.get(node) || []) {
-      if (!valid(sentence)) continue;
+      if (!valid(sentence) || sentence.status === "failed") continue;
       if (!sentence.segments.some((segment) => segment.node === node && offset >= segment.start && offset <= segment.end)) continue;
       if (ranges(sentence).some((range) => [...range.getClientRects()].some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom))) return sentence;
     }
