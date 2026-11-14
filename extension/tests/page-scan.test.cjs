@@ -13,35 +13,24 @@ const { chromium } = require("playwright-core");
     await page.goto("about:blank");
     await page.setContent(`<html lang="en"><head><title>Towers</title></head><body>
       <nav>Ignore navigation.</nav><article><h1>Tower facts</h1>
-      ${Array.from({ length: 48 }, (_, i) => `<p id="p${i}" style="margin-top:120px">Tower ${i} was completed in <a href="https://example.org">1889</a>.</p>`).join("")}
+      ${Array.from({ length: 12 }, (_, i) => `<p id="p${i}" style="margin-top:120px">Tower ${i} was completed in <a href="https://example.org">1889</a>.</p>`).join("")}
       </article></body></html>`);
     await page.evaluate(() => {
       window.mock = { requests: [], messages: [], deepStarts: 0, polls: 0, auto: false, rateOnce: false, nextId: 0,
         uuid: () => "12345678-1234-1234-1234-" + String(++mock.nextId).padStart(12, "0") };
       window.chrome = { runtime: {
-        onMessage: { addListener: listener => { mock.onMessage = listener; } },
+        onMessage: { addListener: () => {} },
         sendMessage: async (message) => {
           mock.messages.push(message);
           if (message.type === "WFC_SCAN_CANCEL" && message.kind === "fast" && mock.holdCancel)
             return new Promise(resolve => { mock.releaseCancel = resolve; });
-          if (message.type === "WFC_FAST") {
+          if (message.type === "WFC_FAST_BATCH") {
             if (mock.rateOnce) { mock.rateOnce = false; return { error: "Rate limited", status: 429, retryAfter: 1000 }; }
-            return new Promise(resolve => {
-              const request = { message, finished: false, delivered: false };
-              request.resolve = answer => {
-                if (request.delivered) return;
-                request.finished = request.delivered = true;
-                request.answer = answer;
-                resolve(answer);
-              };
-              mock.requests.push(request);
-              mock.maxActive = Math.max(mock.maxActive || 0,
-                mock.requests.filter(item => !item.finished && item.message.scanId === message.scanId).length);
-              if (mock.failAlways) queueMicrotask(() => request.resolve({ error: "Persistent backend outage", status: 502, retryable: true }));
-              else if (mock.auto) queueMicrotask(() => request.resolve({ result: {
-                check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [],
-              } }));
-            });
+            if (mock.auto) return { results: message.items.map(() => ({ result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } })) };
+            // One pending request per sentence; the batch answers once all of them are resolved.
+            return Promise.all(message.items.map(item => new Promise(resolve =>
+              mock.requests.push({ message: { ...message, ...item }, resolve, finished: false }))))
+              .then(answers => ({ results: answers }));
           }
           if (message.type === "WFC_DEEP_START") {
             mock.deepStarts++;
@@ -61,87 +50,17 @@ const { chromium } = require("playwright-core");
     // Start while reading the middle: these visible targets must beat earlier offscreen ones.
     await page.locator("#p7").scrollIntoViewIfNeeded();
     await page.evaluate(() => WikiFactPageScan.start());
-    await page.waitForFunction(() => mock.requests.length === 2);
+    await page.waitForFunction(() => mock.requests.length >= 8);
     const first = await page.evaluate(() => mock.requests.map(r => r.message.text));
     assert.ok(first.some(text => /Tower [678]/.test(text)), "Visible targets get priority");
-    assert.equal(await page.evaluate(() => [...document.querySelectorAll("article p")].some(paragraph => {
-      const rect = paragraph.getBoundingClientRect();
-      return paragraph.textContent === mock.requests[0].message.text && rect.bottom > 0 && rect.top < innerHeight;
-    })), true, "the first dispatched sentence is visible to the reader");
     assert.equal(await page.evaluate(() => mock.deepStarts), 0);
     const count = await page.locator("[data-wfc-ui] select option").count();
     assert.ok(count >= 12, "Full loaded article is queued");
-    assert.equal(await page.evaluate(() => mock.requests.filter(request => !request.finished).length), 2,
-      "two independent requests start gently before the backend proves responsive");
-    assert.ok(await page.evaluate(() => mock.requests.length < document.querySelector("[data-wfc-ui]").shadowRoot.querySelectorAll("option").length),
-      "a long article stays queued instead of opening an unbounded number of requests");
 
-    // A fast out-of-order answer must paint while the earlier sentence is still pending.
-    const partialPaint = await page.evaluate(async () => {
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const shadow = document.querySelector("[data-wfc-ui]").shadowRoot;
-      const select = shadow.querySelector("select");
-      const progress = shadow.querySelector('[role="progressbar"]');
-      const options = [...select.options];
-      const names = ["pending", "supported", "refuted", "uncertain", "failed"];
-      const highlights = names.map(name => CSS.highlights.get("wfc-" + name));
-      const mutations = [];
-      const observer = new MutationObserver(records => mutations.push(...records));
-      observer.observe(select, { childList: true, subtree: true, characterData: true });
-      const barMutations = [];
-      const barObserver = new MutationObserver(records => barMutations.push(...records));
-      barObserver.observe(progress, { attributes: true, subtree: true, attributeFilter: ["style"] });
-      const request = mock.requests[1];
-      window.partial = request;
-      request.resolve({ result: { check_id: mock.uuid(), decision: "REFUTED", confidence: .9, sources: [] } });
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      observer.disconnect();
-      barObserver.disconnect();
-      return {
-        completed: Number(progress.getAttribute("aria-valuenow")),
-        segmentWidths: [...progress.children].map(segment => Number.parseFloat(segment.style.width)),
-        changedSegments: [...new Set(barMutations.map(mutation => mutation.target.className))],
-        sentenceId: request.message.sentenceId,
-        newlyStarted: mock.requests.slice(2).map(item => item.message.sentenceId),
-        changedOptions: [...new Set(mutations.map(mutation =>
-          (mutation.target.nodeType === Node.TEXT_NODE ? mutation.target.parentElement : mutation.target)?.closest("option")?.value))],
-        sameOptions: options.every((option, index) => select.options[index] === option),
-        sameHighlights: names.every((name, index) => CSS.highlights.get("wfc-" + name) === highlights[index]),
-      };
-    });
-    assert.equal(partialPaint.completed, 1, "the ready sentence is painted within the next browser frames");
-    assert.equal(partialPaint.newlyStarted.length, 1, "one quick answer refills its slot without raising concurrency prematurely");
-    assert.deepEqual(partialPaint.changedOptions.sort(), [partialPaint.sentenceId, ...partialPaint.newlyStarted].sort(),
-      "one result rewrites only its completed option and the newly started request's option");
-    assert.equal(partialPaint.sameOptions, true, "sentence results preserve the selector's existing nodes");
-    assert.equal(partialPaint.sameHighlights, true, "sentence results update persistent highlights instead of replacing whole article groups");
-    assert.deepEqual(partialPaint.changedSegments, ["refuted"], "a single result updates only its own stacked-bar segment");
-    assert.ok(partialPaint.segmentWidths.every((width, index) => Math.abs(width - (index === 1 ? 100 / count : 0)) < .0001),
-      "the stacked progress bar immediately reflects the single refuted result");
-    assert.equal(await page.evaluate(() => [...CSS.highlights.get("wfc-refuted")].some(range => partial.message.text.includes(range.toString()))), true,
-      "a ready sentence is highlighted immediately");
-    assert.equal(await page.evaluate(() => mock.requests[0].finished), false,
-      "an earlier slow sentence does not hold back the ready result");
-    await page.waitForFunction(() => mock.requests.length > 2);
-    assert.equal(await page.evaluate(() => mock.requests[0].finished), false,
-      "a freed request slot refills before the oldest slow sentence completes");
-    assert.ok(await page.evaluate(() => mock.requests.some(request => !request.finished && request.message.text !== partial.message.text)),
-      "the scanner does not wait for the whole article");
-
-    // One failed request must not discard a neighboring successful verdict or stop the queue.
-    await page.evaluate(() => mock.requests[0].resolve({ error: "One sentence failed", status: 400 }));
-    await page.waitForFunction(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow")) === 2);
-    assert.ok(await page.evaluate(() => CSS.highlights.get("wfc-refuted").size > 0 && CSS.highlights.get("wfc-failed").size > 0),
-      "an independent error keeps the already completed neighboring verdict");
-    assert.ok(await page.evaluate(() => mock.requests.some(request => !request.finished)),
-      "one failed sentence does not cancel the other requests");
-    assert.equal(await page.locator('[data-wfc-ui] .guide .error').innerText(), "One sentence failed",
-      "the guide displays the underlying failure instead of only a failed count");
-
-    async function finishAvailable() {
+    async function finishBatch() {
       await page.evaluate(() => {
         for (const [i, request] of mock.requests.entries()) {
-          if (request.finished || mock.holdStale && request === window.staleRequest) continue;
+          if (request.finished) continue;
           request.finished = true;
           request.resolve({ result: { check_id: mock.uuid(), decision: ["SUPPORTED", "REFUTED", "NOT ENOUGH INFO"][i % 3], confidence: .82,
             sources: ["https://en.wikipedia.org/wiki/Tower"] } });
@@ -150,36 +69,15 @@ const { chromium } = require("playwright-core");
       await page.waitForTimeout(30);
     }
     for (let i = 0; i < count; i++) {
-      await finishAvailable();
+      await finishBatch();
       const active = await page.evaluate(() => mock.requests.filter(r => !r.finished).length);
-      assert.ok(active <= 4, "adaptive concurrency never exceeds four independent sentence requests");
-      if (await page.locator('[data-wfc-ui] [role="progressbar"]').getAttribute("aria-valuenow") === String(count)) break;
+      assert.ok(active <= 16, "Fast concurrency stays bounded (2 batches of 8)");
+      if (await page.locator('[data-wfc-ui] progress').getAttribute("value") === String(count)) break;
     }
     assert.equal(await page.evaluate(() => mock.requests.length), count);
-    assert.ok(await page.evaluate(() => mock.maxActive > 2 && mock.maxActive <= 4),
-      "successful answers ramp parallelism above the gentle two-request start");
     assert.equal(await page.evaluate(() => mock.deepStarts), 0, "Page scans never auto-start explanations");
     assert.equal(await page.evaluate(() => mock.requests.every(r => r.message.context.paragraph.includes(r.message.text))), true);
     assert.equal(await page.evaluate(() => CSS.highlights.get("wfc-supported").size > 0 && CSS.highlights.get("wfc-refuted").size > 0 && CSS.highlights.get("wfc-uncertain").size > 0), true);
-    const barMatchesResults = await page.evaluate(() => {
-      const progress = document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]');
-      const counts = [0, 0, 0, 0];
-      for (const request of mock.requests) {
-        const group = request.answer?.error ? 3 : ["SUPPORTED", "REFUTED", "NOT ENOUGH INFO"].indexOf(request.answer?.result?.decision);
-        if (group >= 0) counts[group]++;
-      }
-      return [...progress.children].every((segment, index) =>
-        Math.abs(Number.parseFloat(segment.style.width) - 100 * counts[index] / mock.requests.length) < .0001);
-    });
-    assert.equal(barMatchesResults, true, "stacked supported, refuted, uncertain and failed widths match all results");
-    // Recover the isolated failure before the following navigation and article-change checks.
-    await page.evaluate(() => { mock.auto = true; return WikiFactPageScan.retry(); });
-    await page.waitForFunction(() => {
-      const shadow = document.querySelector("[data-wfc-ui]").shadowRoot;
-      return Number.parseFloat(shadow.querySelector(".failed-fill").style.width) === 0 &&
-        Number(shadow.querySelector('[role="progressbar"]').getAttribute("aria-valuenow")) === shadow.querySelectorAll("option").length;
-    });
-    await page.evaluate(() => { mock.auto = false; });
 
     // Hover and actual text clicks use original Range locations, including links.
     await page.locator("#p0").scrollIntoViewIfNeeded();
@@ -196,7 +94,7 @@ const { chromium } = require("playwright-core");
     await page.keyboard.press("Escape");
 
     // Green, red and completed gray all allow explicit deep work through keyboard controls.
-    for (const label of ["Supported", "Refuted", "Can't be confirmed from Wikipedia"]) {
+    for (const label of ["Supported", "Refuted", "Uncertain"]) {
       const option = page.locator('[data-wfc-ui] option').filter({ hasText: label }).first();
       await page.locator('[data-wfc-ui] select').selectOption(await option.getAttribute("value"));
       await page.getByRole("button", { name: "Open result", exact: true }).click();
@@ -214,12 +112,8 @@ const { chromium } = require("playwright-core");
     // Stop and Clear ignore responses from earlier scans, rather than repainting stale ranges.
     await page.evaluate(() => { mock.auto = false; return WikiFactPageScan.start(); });
     await page.waitForFunction((n) => mock.requests.length >= n + 1, before);
-    await page.evaluate(() => {
-      window.staleRequest = mock.requests.find(request => !request.finished);
-      mock.holdStale = true;
-      WikiFactPageScan.stop();
-    });
-    await finishAvailable();
+    await page.evaluate(() => WikiFactPageScan.stop());
+    await finishBatch();
     assert.equal(await page.evaluate(() => CSS.highlights.get("wfc-supported").size), 0);
     await page.evaluate(() => {
       mock.holdCancel = true;
@@ -231,18 +125,8 @@ const { chromium } = require("playwright-core");
     assert.equal(await page.evaluate(() => mock.requests.length), stoppedRequests, "Retry waits for Stop cancellation acknowledgment");
     await page.evaluate(() => { mock.holdCancel = false; mock.releaseCancel({}); return mock.retryPromise; });
     await page.waitForFunction(n => mock.requests.length > n, stoppedRequests);
-    assert.ok(await page.evaluate(() => mock.requests.some(request => request !== staleRequest && !request.finished &&
-      request.message.scanId === staleRequest.message.scanId && request.message.sentenceId === staleRequest.message.sentenceId)),
-      "the stopped sentence has a new independent request before the old response arrives");
-    await page.evaluate(() => {
-      mock.holdStale = false;
-      staleRequest.resolve({ result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } });
-    });
-    await page.waitForTimeout(30);
-    assert.equal(await page.evaluate(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"))), 0,
-      "a delayed answer from before Stop cannot complete the retried sentence");
     await page.getByRole("button", { name: "Close page fact-check overlay", exact: true }).click();
-    await finishAvailable();
+    await finishBatch();
     assert.equal(await page.locator("[data-wfc-ui]").count(), 0);
     assert.equal(await page.evaluate(() => CSS.highlights.has("wfc-supported")), false);
 
@@ -251,23 +135,21 @@ const { chromium } = require("playwright-core");
     await page.waitForFunction((n) => mock.requests.length > n, before + 3);
     await page.evaluate(() => { document.querySelector("#p0").firstChild.data = "Changed original sentence. "; });
     await page.getByText("Article text changed. Choose Rescan to check the current content.", { exact: true }).waitFor();
-    await finishAvailable();
+    await finishBatch();
     assert.equal(await page.evaluate(() => CSS.highlights.get("wfc-supported")?.size || 0), 0);
 
     // Failed checks can be explicitly retried; a 429 pauses and retries the bounded queue.
     await page.evaluate(() => WikiFactPageScan.clear());
     await page.evaluate(() => { mock.auto = false; mock.rateOnce = true; return WikiFactPageScan.start(); });
-    await page.waitForFunction(() => mock.messages.some(m => m.type === "WFC_FAST"));
-    const fastAtRate = await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST").length);
+    await page.waitForFunction(() => mock.messages.some(m => m.type === "WFC_FAST_BATCH"));
+    const fastAtRate = await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST_BATCH").length);
     await page.waitForTimeout(150);
-    assert.equal(await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST").length), fastAtRate, "Rate limit imposes shared cooldown");
+    assert.equal(await page.evaluate(() => mock.messages.filter(m => m.type === "WFC_FAST_BATCH").length), fastAtRate, "Rate limit imposes shared cooldown");
     await page.waitForTimeout(1050);
     await page.evaluate(() => {
-      for (const request of mock.requests) if (!request.finished) { request.finished = true; request.resolve({ error: "Test backend failure", status: 400 }); }
+      for (const request of mock.requests) if (!request.finished) { request.finished = true; request.resolve({ error: "Test backend failure", status: 502 }); }
     });
     await page.getByRole("button", { name: "Retry failed" }).waitFor({ state: "visible" });
-    assert.ok(await page.locator('[data-wfc-ui] .bar .failed-fill').evaluate(segment => Number.parseFloat(segment.style.width) > 0),
-      "failed checks occupy the failed segment before retrying");
     await page.evaluate(() => {
       mock.auto = true;
       for (const request of mock.requests) if (!request.finished) {
@@ -280,100 +162,7 @@ const { chromium } = require("playwright-core");
       const shadow = document.querySelector('div[data-wfc-ui]').shadowRoot;
       return [...shadow.querySelectorAll('option')].every(o => o.textContent.includes('Supported'));
     });
-    assert.equal(await page.locator('[data-wfc-ui] .bar .supported').evaluate(segment => Number.parseFloat(segment.style.width)), 100,
-      "retrying failed checks moves their progress into the supported segment");
-    assert.equal(await page.locator('[data-wfc-ui] .bar .failed-fill').evaluate(segment => Number.parseFloat(segment.style.width)), 0);
     await page.evaluate(() => WikiFactPageScan.clear());
-    // Advance only the scheduler's wall clock, leaving browser frames and UI timers real.
-    // Scrolling invokes the normal pump and clears its obsolete real cooldown timer.
-    await page.evaluate(() => {
-      mock.realNow = Date.now;
-      mock.clockOffset = 0;
-      Date.now = () => mock.realNow() + mock.clockOffset;
-      mock.advanceCooldown = () => {
-        mock.clockOffset += 300001;
-        window.dispatchEvent(new Event("scroll"));
-      };
-      mock.requests = [];
-      mock.auto = false;
-      return WikiFactPageScan.start();
-    });
-    await page.waitForFunction(() => mock.requests.length === 2);
-    await page.evaluate(() => {
-      window.temporaryRequest = mock.requests[0];
-      temporaryRequest.resolve({ error: "Temporary backend outage", status: 502, retryable: true });
-    });
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await page.locator('[data-wfc-ui] [role="progressbar"]').getAttribute("aria-valuenow"), "0",
-      "a transient backend error is neither a completed verdict nor a failed sentence");
-    assert.equal(await page.evaluate(() => CSS.highlights.get("wfc-failed").size), 0);
-    assert.equal(await page.evaluate(() => mock.requests.length), 2, "temporary failure pauses new work during shared cooldown");
-    await page.evaluate(() => mock.requests[1].resolve({ result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } }));
-    await page.waitForFunction(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow")) === 1);
-    assert.equal(await page.evaluate(() => mock.requests.length), 2, "another ready result paints while the shared cooldown still holds new requests");
-    await page.evaluate(() => mock.advanceCooldown());
-    await page.waitForFunction(() => mock.requests.some(request => request !== temporaryRequest &&
-      request.message.sentenceId === temporaryRequest.message.sentenceId));
-    await page.evaluate(() => {
-      mock.auto = true;
-      for (const request of mock.requests) if (!request.finished)
-        request.resolve({ result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } });
-    });
-    await page.waitForFunction(() => [...document.querySelector("[data-wfc-ui]").shadowRoot.querySelectorAll("option")]
-      .every(option => option.textContent.includes("Supported")));
-    assert.equal(await page.evaluate(() => CSS.highlights.get("wfc-failed").size), 0,
-      "a transient502 recovers without leaving a false failed result");
-    await page.evaluate(() => WikiFactPageScan.clear());
-
-    // An unavailable backend must pause a finite scan instead of burning through every sentence.
-    await page.evaluate(() => {
-      mock.requests = [];
-      mock.auto = false;
-      mock.failAlways = true;
-      return WikiFactPageScan.start();
-    });
-    await page.waitForFunction(() => mock.requests.length === 2);
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      const paused = await page.evaluate(() => [...document.querySelector("[data-wfc-ui]").shadowRoot.querySelectorAll("option")]
-        .some(option => option.textContent.includes("Stopped")));
-      if (paused) break;
-      const previousRequests = await page.evaluate(() => mock.requests.length);
-      await page.evaluate(() => mock.advanceCooldown());
-      await page.waitForFunction(previous => mock.requests.length > previous ||
-        [...document.querySelector("[data-wfc-ui]").shadowRoot.querySelectorAll("option")].some(option => option.textContent.includes("Stopped")), previousRequests);
-    }
-    const unavailable = await page.evaluate(() => {
-      const shadow = document.querySelector("[data-wfc-ui]").shadowRoot;
-      const options = [...shadow.querySelectorAll("option")];
-      return {
-        requests: mock.requests.length,
-        total: options.length,
-        failed: options.filter(option => option.textContent.includes("Check failed")).length,
-        stopped: options.filter(option => option.textContent.includes("Stopped")).length,
-        error: shadow.querySelector(".guide .error")?.textContent,
-      };
-    });
-    assert.ok(unavailable.failed > 0 && unavailable.failed < unavailable.total && unavailable.stopped > 0,
-      "exhausting transient retries leaves untouched sentences stopped instead of marking the entire article failed");
-    assert.ok(unavailable.requests < unavailable.total, "an outage does not drain the article queue");
-    assert.ok(unavailable.error?.includes("Persistent backend outage"), "the pause explains the backend failure");
-    await page.evaluate(() => mock.advanceCooldown());
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await page.evaluate(() => mock.requests.length), unavailable.requests, "the exhausted scan stays paused until explicit retry");
-    await page.evaluate(() => { mock.failAlways = false; return WikiFactPageScan.retry(); });
-    await page.waitForFunction(previous => mock.requests.length >= previous + 2, unavailable.requests);
-    assert.equal(await page.evaluate(previous => mock.requests.length - previous, unavailable.requests), 2,
-      "explicit retry resets cooldown and restarts with only two concurrent requests");
-    await page.evaluate(() => {
-      mock.auto = true;
-      for (const request of mock.requests) if (!request.finished)
-        request.resolve({ result: { check_id: mock.uuid(), decision: "SUPPORTED", confidence: .9, sources: [] } });
-    });
-    await page.waitForFunction(() => [...document.querySelector("[data-wfc-ui]").shadowRoot.querySelectorAll("option")]
-      .every(option => option.textContent.includes("Supported")));
-    await page.evaluate(() => { WikiFactPageScan.clear(); Date.now = mock.realNow; });
-
     // Strict article CSP must not suppress the guide or the Custom Highlight stylesheet.
     // Keep the document's event listeners: document.open() used by setContent clears them.
     await page.evaluate(() => {

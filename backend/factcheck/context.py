@@ -43,15 +43,31 @@ CONTEXT_RULES = (
 
 
 def context_input(context):
-    return json.dumps(context or {}, ensure_ascii=False)
+    """The page context for the model, without text it already gets elsewhere."""
+    context = dict(context or {})
+    paragraph = context.get("paragraph", "")
+    # The neighbouring sentences are usually inside the paragraph already; don't send them twice.
+    for key in ("previous", "next"):
+        if context.get(key) and context[key] in paragraph:
+            del context[key]
+    return json.dumps(context, ensure_ascii=False)
+
+
+# What the retrieval query keeps from the page context, and how much of each. Embedding time grows
+# with input length, and a long paragraph would drown out the sentence in the vector, so the query
+# keeps only what names the subject: the previous sentence (for "it", "he", "the war") and the
+# headings. The paragraph and next sentence still reach the decision model through context_input().
+RETRIEVAL_CONTEXT = {"previous": 300, "section_heading": 150, "page_title": 150}
 
 
 def retrieval_query(text, context):
-    """Keep the target first and local subject prominent in semantic retrieval."""
+    """The sentence first, plus the little context that helps find the right articles."""
     if not context:
         return text
     parts = [text]
-    for key in ("paragraph", "section_heading", "previous", "next", "page_title", "publication_date"):
-        if context.get(key):
-            parts.append(f"{key}: {context[key][:1500]}")
+    for key, limit in RETRIEVAL_CONTEXT.items():
+        value = context.get(key, "").strip()
+        if value:
+            # The end of the previous sentence is closest to the target.
+            parts.append(value[-limit:] if key == "previous" else value[:limit])
     return "\n".join(parts)

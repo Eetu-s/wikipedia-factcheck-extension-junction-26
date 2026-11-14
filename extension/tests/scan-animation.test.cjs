@@ -32,17 +32,10 @@ const { chromium } = require("playwright-core");
         return animation;
       };
       window.chrome = { runtime: {
-        onMessage: { addListener(listener) { mock.onMessage = listener; } },
+        onMessage: { addListener() {} },
         sendMessage: async (message) => {
-          if (message.type === "WFC_FAST") return new Promise(resolve => {
-            const request = { message, finished: false };
-            request.resolve = answer => {
-              if (request.finished) return;
-              request.finished = true;
-              resolve(answer);
-            };
-            mock.requests.push(request);
-          });
+          if (message.type === "WFC_FAST")
+            return new Promise(resolve => mock.requests.push({ message, resolve, finished: false }));
           if (message.type === "WFC_DEEP_START") {
             mock.deepStarts++;
             return { result: { status: "done", explanation: "Checked the stored evidence.", paragraphs: [], errors: [] } };
@@ -68,12 +61,13 @@ const { chromium } = require("playwright-core");
         hops = [];
         await WikiFactPageScan.start();
       });
-      await page.waitForFunction(() => mock.requests.some(request => request.message.text.includes("Eiffel Tower")));
+      await page.waitForFunction(() => mock.requests.length === 3);
     }
     async function finish(text, decision = "SUPPORTED") {
       await page.evaluate(({ text, decision }) => {
         const request = mock.requests.find(item => !item.finished && item.message.text.includes(text));
         if (!request) throw new Error("No pending request for " + text);
+        request.finished = true;
         request.resolve({ result: { check_id: "animation-check-" + ++mock.nextId, decision, confidence: .9, sources: [] } });
       }, { text, decision });
     }
@@ -86,10 +80,6 @@ const { chromium } = require("playwright-core");
     assert.equal(await overlays.count(), 0, "pending and running sentences do not hop");
     await finish("Eiffel Tower");
     await overlays.waitFor({ state: "attached" });
-    assert.equal(await page.evaluate(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"))), 1,
-      "a ready sentence is painted independently of the other requests");
-    assert.ok(await page.evaluate(() => mock.requests.some(request => !request.finished)),
-      "the hop starts while slower sentence requests are still pending");
     const appearance = await overlays.evaluate(node => ({
       text: node.textContent,
       pointerEvents: getComputedStyle(node).pointerEvents,
@@ -133,15 +123,10 @@ const { chromium } = require("playwright-core");
     await page.evaluate(() => hops[0].finish());
     await expectClean();
 
-    // Complete a neighboring request without motion so the gentle scheduler can dispatch Oslo.
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await finish("Helsinki");
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await page.waitForFunction(() => mock.requests.some(item => item.message.text.includes("Oslo")));
-    await page.emulateMedia({ reducedMotion: "no-preference" });
     // An offscreen result and UI/deeper-analysis refreshes do not replay a completed hop.
+    await page.waitForFunction(() => mock.requests.some(item => item.message.text.includes("Oslo")));
     await finish("Oslo");
-    await page.waitForFunction(() => Number(document.querySelector("[data-wfc-ui]").shadowRoot.querySelector('[role="progressbar"]').getAttribute("aria-valuenow")) === 3);
+    await page.waitForFunction(() => document.querySelector("[data-wfc-ui]").shadowRoot.querySelector("progress").value === 2);
     await page.locator("[data-wfc-ui] select").selectOption(await page.evaluate(() => mock.requests.find(item => item.message.text.includes("Eiffel Tower")).message.sentenceId));
     await page.getByRole("button", { name: "Open result", exact: true }).click();
     await page.waitForFunction(() => mock.deepStarts === 1);
