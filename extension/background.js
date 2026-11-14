@@ -161,6 +161,7 @@ async function pageMessage(message, sender) {
   }
   const { backendUrl, password } = await chrome.storage.local.get(["backendUrl", "password"]);
   if (!password) return { error: "Log in using the extension's toolbar side panel, then choose Rescan.", status: 401 };
+  if (message.type === "WFC_FAST_BATCH") return pageBatch(message, sender, tabId, scanKey, backendUrl);
   const isFast = message.type === "WFC_FAST";
   if (!isFast && !["WFC_DEEP_START", "WFC_DEEP_POLL"].includes(message.type)) throw new Error("Unknown page request.");
   const key = [tabId, message.scanId, message.sentenceId, isFast ? "fast" : "deep"].join(":");
@@ -193,6 +194,61 @@ async function pageMessage(message, sender) {
       if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
     }
     return { result };
+  } finally {
+    clearTimeout(timer);
+    if (pageRequests.get(key) === entry) pageRequests.delete(key);
+  }
+}
+
+// Fast checks for several sentences in one backend request (one password hash, one embedding
+// call and one database write on the server). Answers { results: [...] } in the same order as
+// message.items, each { result } or { error, status, retryAfter }. A failure of the whole request
+// is thrown instead, and the page scan applies it to every sentence in the batch.
+let batchCounter = 0;
+
+async function pageBatch(message, sender, tabId, scanKey, backendUrl) {
+  if (!Array.isArray(message.items) || !message.items.length) throw new Error("Empty page batch.");
+  const cacheKeyOf = (item) =>
+    JSON.stringify([backendUrl, tabId, sender.url, item.sentenceId, item.text, item.context]);
+  const results = message.items.map((item) => {
+    const cached = pageCache.get(cacheKeyOf(item));
+    return cached && Date.now() - cached.at < 15 * 60 * 1000 ? { result: cached.result } : null;
+  });
+  const misses = message.items.filter((_, index) => !results[index]);
+  if (!misses.length) return { results };
+
+  const key = [tabId, message.scanId, "batch", ++batchCounter, "fast"].join(":");
+  const controller = new AbortController();
+  const entry = { controller, tabId, scanId: message.scanId, kind: "fast" };
+  pageRequests.set(key, entry);
+  const timer = setTimeout(() => controller.abort(), 28000);
+  try {
+    const data = await authenticatedRequest("/api/factcheck/batch/", {
+      items: misses.map((item) => ({ text: item.text, sentence_id: item.sentenceId, context: item.context })),
+    }, controller.signal);
+    const current = (await chrome.storage.session.get(scanKey))[scanKey];
+    if (controller.signal.aborted || current?.id !== message.scanId || current?.url !== sender.url) return { stale: true };
+    if (!Array.isArray(data.results) || data.results.length !== misses.length) {
+      throw new Error("Update the backend to support batched page checks.");
+    }
+    let next = 0;
+    return {
+      results: results.map((hit, index) => {
+        if (hit) return hit;
+        const answer = data.results[next++];
+        if (answer?.error) {
+          return {
+            error: answer.error, status: answer.status,
+            retryAfter: answer.retry_after ? answer.retry_after * 1000 : undefined,
+          };
+        }
+        // Refuse a server response that may already have launched unsolicited analysis.
+        if (!answer?.check_id || answer.explanation_id) return { error: "The backend returned an invalid fast result." };
+        pageCache.set(cacheKeyOf(message.items[index]), { at: Date.now(), result: answer });
+        if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
+        return { result: answer };
+      }),
+    };
   } finally {
     clearTimeout(timer);
     if (pageRequests.get(key) === entry) pageRequests.delete(key);

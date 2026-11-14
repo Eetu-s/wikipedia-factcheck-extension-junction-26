@@ -9,13 +9,14 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from .checker import CheckerError, check
+from .checker import CheckerError, check, check_many
 from .context import normalize_context
 from .explainer import start_explanation, start_page_analysis
 from .models import Explanation, PageCheck
@@ -169,6 +170,82 @@ def run_check(body: dict) -> JsonResponse:
         return JsonResponse({**asdict(result), "check_id": str(row.pk), "sentence_id": sentence_id})
     result.explanation_id = start_explanation(text, result.decision, source_articles)
     return JsonResponse(asdict(result))
+
+
+MAX_BATCH = 10
+
+
+@csrf_exempt  # Called by the extension with a password, not a browser session.
+@require_POST
+def factcheck_batch(request):
+    """
+    Fast checks for several page sentences in one request (the page scan).
+
+    Request:  {"password": str, "items": [{"text": str, "sentence_id": str, "context": {...}}, ...]}
+    Response: {"results": [...]}, one per item in the same order, each either
+      {"sentence_id", "decision", "confidence", "sources", "explanation_id": null, "check_id"}
+      or {"sentence_id", "error": str, "status": 429 | 502, "retry_after": int | null}.
+
+    The password is hashed once per batch, all retrieval queries are embedded in one call, the
+    Gemini decisions run in parallel, and the stored checks are written in one transaction.
+    """
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"error": "Request body must be JSON."}, status=400)
+    if not isinstance(body, dict):
+        return JsonResponse({"error": "Request body must be a JSON object."}, status=400)
+    if not authenticated_password(body.get("password")):
+        return JsonResponse({"error": "Invalid password."}, status=401)
+
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= MAX_BATCH:
+        return JsonResponse({"error": f"'items' must be a list of 1 to {MAX_BATCH} sentences."}, status=400)
+    items = []
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            return JsonResponse({"error": f"items[{index}] must be an object."}, status=400)
+        text, sentence_id = raw.get("text"), raw.get("sentence_id", "")
+        if not isinstance(text, str) or not text.strip() or len(text) > 30000:
+            return JsonResponse({"error": f"items[{index}].text must be 1 to 30000 characters."}, status=400)
+        if not isinstance(sentence_id, str) or len(sentence_id) > 200:
+            return JsonResponse({"error": f"items[{index}].sentence_id must be at most 200 characters."}, status=400)
+        try:
+            context = normalize_context(raw.get("context"))
+        except ValueError as error:
+            return JsonResponse({"error": f"items[{index}]: {error}"}, status=400)
+        items.append((text, sentence_id, context))
+
+    try:
+        outcomes = check_many([(text, context) for text, _, context in items])
+    except CheckerError as e:
+        logger.warning("Batch page fact check failed: %s", e)
+        return JsonResponse({"error": "Fact check is unavailable. Please retry."}, status=502)
+
+    results, rows = [], []
+    for (text, sentence_id, context), outcome in zip(items, outcomes):
+        if isinstance(outcome, CheckerError):
+            if outcome.retry_after is None:
+                logger.warning("Page fact check failed: %s", outcome)
+            results.append({
+                "sentence_id": sentence_id,
+                "error": "Fact check rate limited. Please retry later." if outcome.retry_after is not None
+                else "Fact check is unavailable. Please retry.",
+                "status": 429 if outcome.retry_after is not None else 502,
+                "retry_after": outcome.retry_after,
+            })
+            continue
+        result, source_articles = outcome
+        row = PageCheck(
+            sentence_id=sentence_id, original_text=text, context=context,
+            decision=result.decision, confidence=result.confidence,
+            sources=result.sources, evidence=source_articles,
+        )
+        rows.append(row)
+        results.append({**asdict(result), "check_id": str(row.pk), "sentence_id": sentence_id})
+    with transaction.atomic():
+        PageCheck.objects.bulk_create(rows)
+    return JsonResponse({"results": results})
 
 
 def authenticated_password(password):
