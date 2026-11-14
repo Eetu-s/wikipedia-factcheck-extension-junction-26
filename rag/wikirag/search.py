@@ -120,3 +120,70 @@ def semantic_search(cursor, text, lang=None, category=None, limit=10, vector=Non
         if with_text:
             r["text"] = texts.get((r["lang"], r["page_id"]), "")
     return rows
+
+
+# Paragraph search (chunk/chunk_vector, see upstash.py). Same subquery shape as VECTOR_SQL.
+CHUNK_SQL = """
+SELECT c.lang, c.page_id, c.seq, c.title, c.url, v.distance
+FROM (SELECT lang, page_id, seq, VEC_DISTANCE_COSINE(embedding, VEC_FromText(%s)) AS distance
+      FROM chunk_vector
+      ORDER BY distance
+      LIMIT %s) AS v
+JOIN chunk c USING (lang, page_id, seq)
+ORDER BY v.distance"""
+
+# How many paragraphs before and after a matching one to include, and how many from the start
+# of the article (its lead section, which usually summarizes the key facts).
+NEIGHBOURS = 2
+LEAD = 2
+
+
+def chunk_search(cursor, text, limit=3, candidates=40, max_chars=40_000, vector=None):
+    """The articles with the closest paragraphs, best first.
+
+    Each result is a dict: lang, page_id, title, url, distance (of its closest paragraph),
+    matched (paragraph numbers that matched), and text. When the whole article fits in
+    max_chars, text is the whole article; otherwise it is the lead, the matching paragraphs and
+    their neighbours, with "[...]" where paragraphs were left out.
+    """
+    if vector is None:
+        vector = embed(text)
+    cursor.execute(f"SET SESSION mhnsw_ef_search = {int(max(config.EF_SEARCH, candidates))}")
+    cursor.execute(CHUNK_SQL.strip(), [json.dumps(vector), candidates])
+    articles = {}
+    for r in _dicts(cursor):
+        key = (r["lang"], r["page_id"])
+        if key not in articles:
+            if len(articles) == limit:
+                continue
+            articles[key] = {"lang": r["lang"], "page_id": r["page_id"], "title": r["title"],
+                             "url": r["url"], "distance": float(r["distance"]), "matched": []}
+        articles[key]["matched"].append(r["seq"])
+    for (lang, page_id), article in articles.items():
+        cursor.execute("SELECT seq, text FROM chunk WHERE lang = %s AND page_id = %s ORDER BY seq",
+                       [lang, page_id])
+        article["text"] = article_excerpt(cursor.fetchall(), article["matched"], max_chars)
+    return list(articles.values())
+
+
+def article_excerpt(paragraphs, matched, max_chars):
+    """The article's text from [(seq, text), ...]: all of it if it fits, else the parts around
+    the matched paragraphs (see chunk_search)."""
+    whole = "\n\n".join(text for _, text in paragraphs)
+    if len(whole) <= max_chars:
+        return whole
+    order = [seq for seq, _ in paragraphs]
+    position = {seq: i for i, seq in enumerate(order)}
+    keep = set(range(min(LEAD, len(order))))
+    for seq in matched:
+        i = position[seq]
+        keep.update(range(max(0, i - NEIGHBOURS), min(len(order), i + NEIGHBOURS + 1)))
+    parts, previous = [], -1
+    for i in sorted(keep):
+        if i != previous + 1:
+            parts.append("[...]")
+        parts.append(paragraphs[i][1])
+        previous = i
+    if previous != len(order) - 1:
+        parts.append("[...]")
+    return "\n\n".join(parts)[:max_chars]

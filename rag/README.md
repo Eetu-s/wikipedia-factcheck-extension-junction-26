@@ -26,12 +26,33 @@ python -m wikirag.load      # tables + articles + categories + vectors, ~190 MB 
 The downloaded files go to `data/wikirag/`, which is git-ignored. Settings are `RAG_*` env vars,
 or a `rag/.env` file (see `.env.example`).
 
+## English paragraphs (optional)
+
+```bash
+python -m wikirag.upstash              # files 000-004: ~13k English articles, ~500k paragraphs
+python -m wikirag.upstash --files 0-7  # more; safe to re-run, finished files are skipped
+```
+
+Loads ready-made bge-m3 paragraph vectors from
+[Upstash/wikipedia-2024-06-bge-m3](https://huggingface.co/datasets/Upstash/wikipedia-2024-06-bge-m3)
+(English, June 2024) into `chunk` and `chunk_vector`. No embedding is needed: their vectors
+match Ollama's bge-m3 exactly (cosine 1.0000) for `"{title}\n{text}"`. The 471 English files
+are ordered by page id, so the first ones hold the oldest, mostly core articles. Each file is
+~440 MB, downloaded, loaded and deleted in turn. Inserting into the vector index is the slow
+part; raise `mhnsw_max_cache_size` (default 16 MB) first.
+
+On the production server, follow [LOAD_ON_SERVER.md](LOAD_ON_SERVER.md).
+
+The backend searches both `article_vector` and `chunk_vector` and keeps the closest articles;
+either table may be missing.
+
 ## Search
 
 ```bash
 python -m wikirag "Which peace treaty ended the Winter War?"
 python -m wikirag --lang fi "Suomi menetti Karjalan vuonna 1940"
 python -m wikirag --category "Suomen sisällissota" --excerpt --limit 3 "prison camps"
+python -m wikirag --chunks "Aristotle was a student of Plato"   # English paragraphs
 ```
 
 Output (stdout is pure JSON; timing goes to stderr, so it can be piped to `jq`):
