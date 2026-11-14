@@ -1,0 +1,209 @@
+/* Same Terrazzo theme as the extension's side panel (tokens.css and base.css are copies of the
+ * extension's). Colours, spacing and type are tokens in tokens.css; change a value there. */
+@import url("./tokens.css");
+@import url("./base.css");
+
+:root {
+  --offset-card: 8px;
+  --shadow-card: var(--offset-card) var(--offset-card) 0 var(--color-paper-3);
+  --font-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-outlier: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --control-h: 44px;
+  --verdict-supported: var(--color-success);
+  --verdict-refuted: var(--color-error);
+  --verdict-unsure: var(--color-muted);
+}
+
+h1, h2, h3 { max-width: none; }
+h1 { font-size: var(--text-2xl); line-height: 1.1; }
+h2 { font-size: var(--text-lg); }
+
+.page {
+  display: grid;
+  gap: var(--space-lg);
+  max-width: 44rem;
+  margin-inline: auto;
+  padding: var(--space-xl) var(--space-md) var(--space-2xl);
+}
+
+.page > header { display: grid; gap: var(--space-xs); padding-bottom: var(--space-md); border-bottom: var(--rule-bar) solid var(--color-ink); }
+.page > header .lead { color: var(--color-ink-2); }
+
+.stack { display: grid; gap: var(--space-md); align-content: start; }
+
+/* ---------- controls ---------- */
+
+label { display: grid; gap: var(--space-2xs); font-size: var(--text-sm); font-weight: 500; }
+
+input, textarea {
+  width: 100%;
+  min-height: var(--control-h);
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--rule-hair) solid var(--color-ink);
+  border-radius: var(--radius-card);
+  background: var(--color-plate);
+  color: var(--color-ink);
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+textarea { resize: vertical; line-height: 1.45; min-height: 7rem; }
+input::placeholder, textarea::placeholder { color: var(--color-muted); opacity: 1; }
+input:hover, textarea:hover { border-color: var(--color-ink-2); }
+input:focus-visible, textarea:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+input:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
+
+button {
+  min-height: var(--control-h);
+  padding: var(--space-xs) var(--space-lg);
+  border: var(--rule-bar) solid var(--color-ink);
+  border-radius: var(--radius-pill);
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-size: var(--text-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+button:hover { background: var(--color-ink-2); border-color: var(--color-ink-2); }
+button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+button:active { background: var(--color-ink); border-color: var(--color-ink); transform: translateY(1px); }
+button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+button.quiet { background: transparent; color: var(--color-ink); }
+button.quiet:hover { background: var(--color-paper-2); border-color: var(--color-ink); }
+button.quiet:active { background: var(--color-paper-3); }
+
+@media (pointer: coarse) {
+  :root { --control-h: 48px; }
+}
+
+/* ---------- messages ---------- */
+
+.error { margin: 0; color: var(--color-error); font-size: var(--text-sm); font-weight: 500; }
+.error:empty { display: none; }
+
+/* ---------- the verdict plate ---------- */
+
+.plate {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border: var(--rule-bar) solid var(--color-ink);
+  background: var(--color-plate);
+  box-shadow: var(--shadow-card);
+}
+
+.claim { display: grid; gap: var(--space-2xs); }
+.claim .label { font-size: var(--text-sm); font-weight: 500; color: var(--color-muted); }
+.claim blockquote {
+  margin: 0;
+  padding-left: var(--space-sm);
+  border-left: var(--rule-bar) solid var(--color-rule);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.verdict {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--rule-hair) solid var(--verdict-color, var(--verdict-unsure));
+  background: color-mix(in oklab, var(--verdict-color, var(--verdict-unsure)) 9%, var(--color-plate));
+}
+[data-decision="SUPPORTED"] { --verdict-color: var(--verdict-supported); }
+[data-decision="REFUTED"] { --verdict-color: var(--verdict-refuted); }
+.verdict .label { font-size: var(--text-sm); font-weight: 500; color: var(--color-muted); }
+.verdict .decision {
+  font-size: var(--text-2xl);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: var(--tracking-display);
+  color: var(--verdict-color, var(--color-ink));
+  overflow-wrap: anywhere;
+}
+
+.confidence { display: grid; gap: var(--space-2xs); }
+.confidence .row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); font-size: var(--text-sm); font-weight: 500; }
+.confidence .figure { font-family: var(--font-outlier); font-size: var(--text-lg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.measure { position: relative; height: 8px; background: var(--color-paper-3); overflow: hidden; }
+.measure > span {
+  position: absolute;
+  inset: 0;
+  background: var(--verdict-color, var(--color-ink));
+  transform-origin: left center;
+  transform: scaleX(var(--v, 0));
+  animation: fill var(--dur-long) var(--ease-out);
+}
+@keyframes fill { from { transform: scaleX(0); } }
+
+.sources, .explanation { display: grid; gap: var(--space-xs); }
+.sources ol, .explanation ol { margin: 0; padding: 0; list-style: none; border-top: var(--rule-bar) solid var(--color-ink); }
+.sources li { display: grid; gap: var(--space-3xs); padding: var(--space-sm) 0; border-bottom: var(--rule-hair) solid var(--color-rule); }
+.sources a, .cite a { font-weight: 500; overflow-wrap: anywhere; text-decoration-color: var(--color-rule); }
+.sources a:hover, .cite a:hover { text-decoration-color: var(--color-accent); color: var(--color-accent); }
+.host { font-family: var(--font-outlier); font-size: var(--text-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.none { margin: 0; color: var(--color-muted); font-size: var(--text-sm); }
+
+/* ---------- factual corrections (refuted claims) ---------- */
+
+.claim .factual-error {
+  color: var(--color-ink);
+  background: color-mix(in oklab, var(--verdict-refuted) 15%, var(--color-plate));
+  border-bottom: var(--rule-bar) solid var(--verdict-refuted);
+}
+.error-reference { margin-inline-start: var(--space-3xs); font-size: var(--text-xs); font-weight: 700; vertical-align: super; }
+.explanation .correction { gap: var(--space-sm); }
+.correction h3 { scroll-margin-top: var(--space-md); }
+.correction p { overflow-wrap: anywhere; }
+.evidence { display: grid; gap: var(--space-xs); }
+.evidence-label { font-size: var(--text-sm); font-weight: 600; color: var(--color-muted); }
+.analysis-notice { padding: var(--space-xs); background: var(--color-paper-2); font-size: var(--text-sm); }
+.unverified { font-size: var(--text-sm); }
+.unverified summary { cursor: pointer; font-weight: 500; }
+.unverified ul { margin: var(--space-xs) 0 0; padding: 0; list-style: none; }
+
+/* ---------- explanation: the source paragraphs behind the verdict ---------- */
+
+.explanation li { display: grid; gap: var(--space-xs); padding: var(--space-sm) 0; border-bottom: var(--rule-hair) solid var(--color-rule); }
+.explanation blockquote {
+  margin: 0;
+  padding-left: var(--space-sm);
+  border-left: var(--rule-bar) solid var(--verdict-color, var(--color-rule));
+  font-size: var(--text-md);
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.cite { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2xs) var(--space-xs); font-size: var(--text-sm); }
+.explanation .skeleton span:nth-child(3) { width: 78%; }
+
+.raw {
+  margin: 0;
+  padding: var(--space-sm);
+  background: var(--color-paper-2);
+  font-family: var(--font-outlier);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- loading: a skeleton in the shape of the plate ---------- */
+
+.skeleton { display: grid; gap: var(--space-sm); }
+.skeleton span { display: block; height: 14px; background: var(--color-paper-3); }
+.skeleton span:nth-child(1) { width: 92%; }
+.skeleton span:nth-child(2) { width: 64%; }
+.skeleton .bar { height: 56px; width: 100%; background: var(--color-paper-2); }
+.status { margin: 0; font-size: var(--text-sm); font-weight: 500; color: var(--color-muted); }
+
+/* ---------- error ---------- */
+
+.plate.failed { border-color: var(--color-error); box-shadow: var(--offset-card) var(--offset-card) 0 color-mix(in oklab, var(--color-error) 18%, var(--color-paper)); }
+.failed .error { font-size: var(--text-md); }
+
+.footer { display: flex; justify-content: flex-start; }
