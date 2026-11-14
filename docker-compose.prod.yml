@@ -34,7 +34,7 @@ services:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
     env_file:
-      - ./.env
+      - ./backend/.env
     environment:
       DJANGO_DEBUG: "0"
       DJANGO_ALLOWED_HOSTS: klausde.tech
