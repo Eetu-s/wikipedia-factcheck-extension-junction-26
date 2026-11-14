@@ -52,6 +52,9 @@ services:
 
   mariadb:
     image: mariadb:lts            # vector search needs MariaDB 11.7 or later
+    # Vector index cache (default 16 MB) and InnoDB cache. Too small makes vector search and
+    # loading much slower; 1 GB each fits next to Ollama and the backend on an 8 GB server.
+    command: ["--mhnsw-max-cache-size=1G", "--innodb-buffer-pool-size=1G"]
     environment:
       MARIADB_ROOT_PASSWORD: wikirag
       MARIADB_DATABASE: wikirag
