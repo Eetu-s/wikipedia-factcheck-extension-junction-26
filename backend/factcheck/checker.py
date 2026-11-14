@@ -111,12 +111,15 @@ def pick_sources(decision: Decision, articles: list[dict], answers: dict) -> lis
 
     The Decisions API can't cite, so each article gets its own yes/no question (see ask_gemini).
     A SUPPORTED or REFUTED decision always gets at least the most relevant article.
+    NOT ENOUGH INFO gets every article the model checked, so the user can see what was read.
     """
     scored = sorted(
         ((answers[f"source_{i}"]["noul"], a["url"]) for i, a in enumerate(articles)), reverse=True
     )
+    if decision == Decision.NOT_ENOUGH_INFO:
+        return [url for score, url in scored]
     sources = [url for score, url in scored if score >= SOURCE_THRESHOLD]
-    if not sources and scored and decision != Decision.NOT_ENOUGH_INFO:
+    if not sources and scored:
         sources = [scored[0][1]]
     return sources
 
