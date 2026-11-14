@@ -125,6 +125,13 @@ async function authenticatedRequest(path, body, signal, method = "POST", raw = f
 // survives service-worker suspension; only request controllers and the bounded cache are transient.
 const pageRequests = new Map();
 const pageCache = new Map();
+
+// Forget the cached fast results of one tab (cache keys are JSON arrays with the tab id second).
+function clearPageCache(tabId) {
+  for (const key of pageCache.keys()) {
+    if (JSON.parse(key)[1] === tabId) pageCache.delete(key);
+  }
+}
 const SCAN_KEY = (tabId) => "pageScan:" + tabId;
 
 async function startPageScan(tabId) {
@@ -152,6 +159,8 @@ async function pageMessage(message, sender) {
   const scanKey = SCAN_KEY(tabId);
   if (message.type === "WFC_SCAN_BEGIN") {
     abortPageRequests(tabId);
+    // A new scan or Rescan asks the backend again instead of reusing cached results.
+    clearPageCache(tabId);
     await chrome.storage.session.set({ [scanKey]: { id: message.scanId, url: sender.url } });
     return {};
   }
@@ -159,7 +168,11 @@ async function pageMessage(message, sender) {
   if (!saved || saved.id !== message.scanId || saved.url !== sender.url) return { stale: true };
   if (message.type === "WFC_SCAN_CANCEL") {
     abortPageRequests(tabId, message.scanId, message.kind);
-    if (!message.kind) await chrome.storage.session.remove(scanKey);
+    if (!message.kind) {
+      // Clear: forget this tab's scan and its cached results.
+      clearPageCache(tabId);
+      await chrome.storage.session.remove(scanKey);
+    }
     return {};
   }
   const { backendUrl, password } = await chrome.storage.local.get(["backendUrl", "password"]);
