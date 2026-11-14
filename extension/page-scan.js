@@ -13,6 +13,7 @@
   let starting = 0;
   let renderFrame = 0;
   let hoverFrame = 0;
+  let pumpFrame = 0;
   let wakeTimer = 0;
 
   const send = (type, extra = {}, current = scan) => chrome.runtime.sendMessage({
@@ -66,6 +67,8 @@
     if (!current) return;
     current.stopped = true;
     current.ui.clearAnimations();
+    cancelAnimationFrame(pumpFrame);
+    pumpFrame = 0;
     clearTimeout(wakeTimer);
     current.cancelFast = send("WFC_SCAN_CANCEL", { kind: "fast" }, current).catch(() => {});
     for (const sentence of current.sentences) {
@@ -84,7 +87,8 @@
     clearTimeout(wakeTimer);
     cancelAnimationFrame(renderFrame);
     cancelAnimationFrame(hoverFrame);
-    renderFrame = hoverFrame = 0;
+    cancelAnimationFrame(pumpFrame);
+    renderFrame = hoverFrame = pumpFrame = 0;
     if (!old) return;
     old.invalid = true;
     old.observer?.disconnect();
@@ -111,16 +115,24 @@
   }
 
   function pump(current = scan) {
-    if (!current || !live(current) || current.stopped) return;
+    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY) return;
     clearTimeout(wakeTimer);
     const now = Date.now();
     if (current.cooldown > now) {
       wakeTimer = setTimeout(() => pump(current), current.cooldown - now);
       return;
     }
-    const pending = current.sentences.filter((s) => s.status === "pending" && s.retryAt <= now);
-    // Re-evaluate priority as the reader scrolls; every sentence remains in this finite queue.
-    pending.sort((a, b) => Number(visible(b)) - Number(visible(a)) || a.index - b.index);
+    // Read each candidate's geometry at most once, and stop once enough visible
+    // sentences can fill the available slots. The snapshot retains the rest of the queue.
+    const capacity = (CONCURRENCY - current.active) * BATCH_SIZE;
+    const visiblePending = [], offscreenPending = [];
+    for (const sentence of current.sentences) {
+      if (sentence.status !== "pending" || sentence.retryAt > now) continue;
+      if (visible(sentence)) visiblePending.push(sentence);
+      else if (offscreenPending.length < capacity) offscreenPending.push(sentence);
+      if (visiblePending.length === capacity) break;
+    }
+    const pending = visiblePending.concat(offscreenPending).slice(0, capacity);
     while (current.active < CONCURRENCY && pending.length) {
       const batch = pending.splice(0, BATCH_SIZE);
       if (!batch.every(valid)) {
@@ -140,6 +152,15 @@
     const deferred = current.sentences.filter((s) => s.status === "pending" && s.retryAt > now);
     if (deferred.length) wakeTimer = setTimeout(() => pump(current), Math.max(1, Math.min(...deferred.map((s) => s.retryAt)) - now));
     refresh();
+  }
+
+  function schedulePump() {
+    const current = scan;
+    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || pumpFrame) return;
+    pumpFrame = requestAnimationFrame(() => {
+      pumpFrame = 0;
+      pump(current);
+    });
   }
 
   // Sentences of in-flight batches, by scan id and sentence id, until their answer arrives.
@@ -383,7 +404,7 @@
     scan.ui.show(sentence, { x: event.clientX, y: event.clientY, pinned: true });
     if (sentence.status === "done") analyze(sentence.id);
   }, true);
-  window.addEventListener("scroll", () => { if (scan && !scan.stopped) pump(); }, { passive: true });
+  window.addEventListener("scroll", schedulePump, { passive: true });
   window.addEventListener("pagehide", () => { clear(); });
   window.addEventListener("popstate", closeOnNavigation);
   window.addEventListener("hashchange", closeOnNavigation);

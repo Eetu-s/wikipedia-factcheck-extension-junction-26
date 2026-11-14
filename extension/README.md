@@ -22,11 +22,12 @@ Sentences begin with subtle gray pending highlights and update progressively:
 - **◌ Pending/checking**, **Ⅱ Stopped**, and **! Failed** have distinct labels; failed
   checks also use a wavy gray underline.
 
-While checking, visible text pulses lighter and darker in a wave moving from left to
-right, without jumping. When a verdict arrives, its highlight sweeps smoothly from
-right to left; each letter lifts 4 pixels and settles as the color reaches it. These
-animations respect reduced-motion preferences and leave the article's text and
-layout intact.
+While checking, visible text pulses in a soft, 30° diagonal wave moving left to right,
+without jumping. The loading cycle lasts 2 seconds, with peak lightening reduced by
+30%. Verdict highlights also sweep left to right; each letter lifts 4 pixels and
+settles as the color reaches it. Animations respect reduced-motion preferences and
+leave the article's text and layout intact. See [animation performance](PERFORMANCE.md)
+for the rendering design, profiling results, and a reproducible benchmark.
 
 Hover shows the fast verdict, confidence, and sources. Click a completed sentence, or use
 **Open result** in the guide, to pin the result and request deeper analysis. All completed
@@ -146,6 +147,7 @@ Backend contract tests mock Wikipedia/model calls and require no external servic
 ```bash
 docker compose exec backend python manage.py test
 node extension/tests/background.test.cjs
+node extension/tests/page-queue.test.cjs
 ```
 
 Browser tests exercise extraction, real DOM Ranges, the scan controller, and Shadow DOM
@@ -157,6 +159,12 @@ npm install --prefix /tmp/wfc-tests playwright-core
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/article.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/page-ui.test.cjs
 NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/scan-animation.test.cjs
+```
+
+Profile a synthetic 1,800-sentence scan with Chrome's performance counters:
+
+```bash
+NODE_PATH=/tmp/wfc-tests/node_modules node extension/tests/scan-performance.cjs
 ```
 
 The browser tests default to Chrome's macOS application path. Set `CHROME_PATH` to your
