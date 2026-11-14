@@ -90,16 +90,22 @@ def check_many(items: list[tuple[str, dict | None]]) -> list:
     (FactCheckResult, articles), or the CheckerError for that item. Errors that affect every item
     (RAG database or Ollama down) are raised instead.
     """
-    article_lists = search_wikipedia_many([retrieval_query(text, context) for text, context in items])
-
-    def one(item, articles):
-        try:
-            return decide(item[0], articles, item[1])
-        except CheckerError as error:
-            return error
-
+    article_lists = retrieve_many(items)
     with ThreadPoolExecutor(max_workers=min(BATCH_DECISION_WORKERS, len(items))) as pool:
-        return list(pool.map(one, items, article_lists))
+        return list(pool.map(decide_or_error, items, article_lists))
+
+
+def retrieve_many(items: list[tuple[str, dict | None]]) -> list[list[dict]]:
+    """The retrieval step of check_many(): articles for each (text, context) item."""
+    return search_wikipedia_many([retrieval_query(text, context) for text, context in items])
+
+
+def decide_or_error(item: tuple[str, dict | None], articles: list[dict]):
+    """The decision step of check_many() for one item: (result, articles) or its CheckerError."""
+    try:
+        return decide(item[0], articles, item[1])
+    except CheckerError as error:
+        return error
 
 
 def decide(text: str, articles: list[dict], context: dict | None) -> tuple[FactCheckResult, list[dict]]:

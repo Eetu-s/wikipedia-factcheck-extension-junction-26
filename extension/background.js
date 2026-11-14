@@ -79,7 +79,9 @@ async function callBackend(text) {
   return authenticatedRequest("/api/factcheck/", { text });
 }
 
-async function authenticatedRequest(path, body, signal, method = "POST") {
+// With raw = true, a successful response is returned unread (for streaming); errors are handled
+// the same way either way.
+async function authenticatedRequest(path, body, signal, method = "POST", raw = false) {
   const { password } = await chrome.storage.local.get("password");
   if (!password) throw new Error("Not logged in.");
   const url = (await backendBase()) + path;
@@ -98,6 +100,7 @@ async function authenticatedRequest(path, body, signal, method = "POST") {
     throw new Error("Can't reach the backend at " + url);
   }
 
+  if (raw && response.ok) return response;
   const data = await response.json().catch(() => ({}));
   if (signal?.aborted) throw new Error("Request cancelled or timed out.");
   if (response.status === 401) {
@@ -200,59 +203,115 @@ async function pageMessage(message, sender) {
   }
 }
 
-// Fast checks for several sentences in one backend request (one password hash, one embedding
-// call and one database write on the server). Answers { results: [...] } in the same order as
-// message.items, each { result } or { error, status, retryAfter }. A failure of the whole request
-// is thrown instead, and the page scan applies it to every sentence in the batch.
+// Fast checks for several sentences in one streamed backend request (one password hash, one
+// embedding call and grouped database writes on the server). Each sentence's answer goes to the
+// page as soon as it arrives, as { type: "WFC_FAST_ITEM", scanId, sentenceId, answer }, where
+// answer is { result } or { error, status, retryAfter }. The reply itself comes after every item
+// message: {} when the stream is complete, { stale: true }, or a thrown error for the whole request.
+// The page scan applies the reply to any sentence of the batch it hasn't had an answer for.
 let batchCounter = 0;
+// Abort a batch when the backend sends nothing for this long (Chrome may stop a background
+// script whose fetch has no response for about 30 s).
+const BATCH_IDLE_TIMEOUT = 28000;
 
 async function pageBatch(message, sender, tabId, scanKey, backendUrl) {
   if (!Array.isArray(message.items) || !message.items.length) throw new Error("Empty page batch.");
   const cacheKeyOf = (item) =>
     JSON.stringify([backendUrl, tabId, sender.url, item.sentenceId, item.text, item.context]);
-  const results = message.items.map((item) => {
+  const deliveries = [];
+  const deliver = (item, answer) => deliveries.push(chrome.tabs.sendMessage(tabId, {
+    type: "WFC_FAST_ITEM", scanId: message.scanId, sentenceId: item.sentenceId, answer,
+  }, { frameId: 0 }).catch(() => {}));
+
+  const misses = [];
+  for (const item of message.items) {
     const cached = pageCache.get(cacheKeyOf(item));
-    return cached && Date.now() - cached.at < 15 * 60 * 1000 ? { result: cached.result } : null;
-  });
-  const misses = message.items.filter((_, index) => !results[index]);
-  if (!misses.length) return { results };
+    if (cached && Date.now() - cached.at < 15 * 60 * 1000) deliver(item, { result: cached.result });
+    else misses.push(item);
+  }
+  if (!misses.length) {
+    await Promise.all(deliveries);
+    return {};
+  }
 
   const key = [tabId, message.scanId, "batch", ++batchCounter, "fast"].join(":");
   const controller = new AbortController();
   const entry = { controller, tabId, scanId: message.scanId, kind: "fast" };
   pageRequests.set(key, entry);
-  const timer = setTimeout(() => controller.abort(), 28000);
-  try {
-    const data = await authenticatedRequest("/api/factcheck/batch/", {
-      items: misses.map((item) => ({ text: item.text, sentence_id: item.sentenceId, context: item.context })),
-    }, controller.signal);
+  let timer;
+  const resetTimer = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), BATCH_IDLE_TIMEOUT);
+  };
+  const stillCurrent = async () => {
     const current = (await chrome.storage.session.get(scanKey))[scanKey];
-    if (controller.signal.aborted || current?.id !== message.scanId || current?.url !== sender.url) return { stale: true };
-    if (!Array.isArray(data.results) || data.results.length !== misses.length) {
-      throw new Error("Update the backend to support batched page checks.");
-    }
-    let next = 0;
-    return {
-      results: results.map((hit, index) => {
-        if (hit) return hit;
-        const answer = data.results[next++];
-        if (answer?.error) {
-          return {
-            error: answer.error, status: answer.status,
-            retryAfter: answer.retry_after ? answer.retry_after * 1000 : undefined,
-          };
+    return !controller.signal.aborted && current?.id === message.scanId && current?.url === sender.url;
+  };
+  resetTimer();
+  try {
+    const response = await authenticatedRequest("/api/factcheck/batch/", {
+      items: misses.map((item) => ({ text: item.text, sentence_id: item.sentenceId, context: item.context })),
+      stream: true,
+    }, controller.signal, "POST", true);
+
+    // NDJSON: one {"index", ...answer} line per sentence, in the order the decisions finish.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let received = 0;
+    for (;;) {
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        throw new Error(controller.signal.aborted ? "Request cancelled or timed out." : "The connection to the backend was lost.");
+      }
+      if (chunk.done) break;
+      resetTimer();
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (!(await stillCurrent())) {
+          controller.abort();
+          return { stale: true };
         }
-        // Refuse a server response that may already have launched unsolicited analysis.
-        if (!answer?.check_id || answer.explanation_id) return { error: "The backend returned an invalid fast result." };
-        pageCache.set(cacheKeyOf(message.items[index]), { at: Date.now(), result: answer });
-        if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
-        return { result: answer };
-      }),
-    };
+        let answer;
+        try {
+          answer = JSON.parse(line);
+        } catch (e) {
+          continue;
+        }
+        const item = misses[answer.index];
+        if (!item) continue;
+        received++;
+        deliver(item, pageAnswer(answer, () => {
+          pageCache.set(cacheKeyOf(item), { at: Date.now(), result: answer });
+          if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
+        }));
+      }
+    }
+    // Every item message must reach the page before this reply does.
+    await Promise.all(deliveries);
+    if (!(await stillCurrent())) return { stale: true };
+    if (received < misses.length) throw new Error("Update the backend to support streamed page checks.");
+    return {};
   } finally {
     clearTimeout(timer);
     if (pageRequests.get(key) === entry) pageRequests.delete(key);
   }
+}
+
+// One backend batch answer as the page scan expects it. `remember` caches a successful result.
+function pageAnswer(answer, remember) {
+  if (answer.error) {
+    return { error: answer.error, status: answer.status, retryAfter: answer.retry_after ? answer.retry_after * 1000 : undefined };
+  }
+  // Refuse a server response that may already have launched unsolicited analysis.
+  if (!answer.check_id || answer.explanation_id) return { error: "The backend returned an invalid fast result." };
+  remember();
+  return { result: answer };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
