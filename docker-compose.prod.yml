@@ -80,7 +80,14 @@ services:
       - traefik.http.routers.wikipedia-factcheck.entrypoints=websecure
       - traefik.http.routers.wikipedia-factcheck.tls=true
       - traefik.http.routers.wikipedia-factcheck.tls.certresolver=letsencrypt
-      - traefik.http.routers.wikipedia-factcheck.middlewares=wikipedia-factcheck-ratelimit
+      # Page and static files: no rate limit (one page load is about six requests).
+      # The API and admin: the rate limit below. The longer rule wins, so these paths match this router.
+      - traefik.http.routers.wikipedia-factcheck-api.rule=Host(`klausde.tech`) && (PathPrefix(`/api/`) || PathPrefix(`/admin/`))
+      - traefik.http.routers.wikipedia-factcheck-api.entrypoints=websecure
+      - traefik.http.routers.wikipedia-factcheck-api.tls=true
+      - traefik.http.routers.wikipedia-factcheck-api.tls.certresolver=letsencrypt
+      - traefik.http.routers.wikipedia-factcheck-api.middlewares=wikipedia-factcheck-ratelimit
+      - traefik.http.routers.wikipedia-factcheck-api.service=wikipedia-factcheck
       - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.average=10
       - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.period=1m
       - traefik.http.middlewares.wikipedia-factcheck-ratelimit.ratelimit.burst=20
