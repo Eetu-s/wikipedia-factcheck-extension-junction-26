@@ -36,15 +36,19 @@ to analyze the chosen sentence.
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
 Its **×** closes the overlay and clears the scan. Navigating or switching away from the
 tab also closes it; leaving the browser window dismisses the sentence popover.
-Up to twelve independent sentence requests run concurrently, prioritizing visible text
-and then nearby content. Each sentence appears on the next animation frame after its
-answer arrives, and its slot is immediately reused for the next sentence. Highlight ranges
+Scanning starts with two independent sentence requests and grows to at most four when
+answers arrive quickly, prioritizing visible text and then nearby content. Each sentence
+appears on the next animation frame after its answer arrives, and its slot is immediately
+reused for the next sentence. Highlight ranges
 and selector options update incrementally, and decorative hops have a small frame budget
 so bursts of results do not block scrolling.
 Checks use the saved password with `/api/factcheck/`, which bypasses the public API
 and production proxy rate limits. Upstream model-provider rate limits still pause the
-queue with bounded retries. Failed checks show their error in the guide as well as the
-sentence result, so a connection or backend failure is visible without opening each result.
+queue with bounded retries. Gateway errors and timeouts reduce concurrency and retry with
+shared exponential backoff. If the server remains unavailable, scanning pauses and keeps
+completed results, leaving the rest available for **Retry failed**. Failed checks show
+their error in the guide as well as the sentence result, so a connection or backend
+failure is visible without opening each result.
 Article/context changes invalidate the snapshot; appended content is checked only after
 an explicit **Rescan**. Clear, navigation, and restarting discard stale responses. Cached
 fast results include the original sentence, location, page, context, tab, and backend and
