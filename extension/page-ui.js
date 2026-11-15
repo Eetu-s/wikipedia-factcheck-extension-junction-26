@@ -183,10 +183,9 @@
     shadow.append(guide, popover, live);
     document.documentElement.append(host);
     let sentences = [], current = null, pinned = false, hideTimer, destroyed = false, autoCollapsed = false;
-    let position = { x: 12, y: 12 }, lastGuideState = "", renderKey = "", announcedSentenceState = "";
+    let position = { x: 12, y: 12 }, lastGuideState = "", optionIds = "", renderKey = "", announcedSentenceState = "";
     const animations = new Map(), pendingReveals = new Map(), pendingGeometry = new Map();
-    const optionNodes = new Map(), optionStates = new Map(), sentenceById = new Map();
-    let optionOrder = [];
+    const optionNodes = new Map();
     let animationFrame = 0, scrollTimer = 0, scrolling = false, loadingStopped = false, loadingCandidates = null;
     let loadingStage = null, loadingBase = null, loadingCanvas = null, loadingInk = null;
     let loadingFrame = 0, loadingDirty = false, lastLoadingPaint = -Infinity, loadingScale = 1;
@@ -429,9 +428,10 @@
     function renderAnimations() {
       animationFrame = 0;
       if (destroyed || scrolling || reducedMotion?.matches || !globalThis.CSS?.highlights || !globalThis.Highlight || typeof host.animate !== "function") return;
+      const byId = new Map(sentences.map(sentence => [sentence.id, sentence]));
       let changed = false;
       for (const [id, item] of animations) {
-        if (item.kind === "loading" && (loadingStopped || !["pending", "running"].includes(sentenceById.get(id)?.status) || pendingReveals.has(id))) {
+        if (item.kind === "loading" && (loadingStopped || !["pending", "running"].includes(byId.get(id)?.status) || pendingReveals.has(id))) {
           finishAnimation(id, false);
           changed = true;
         }
@@ -755,28 +755,20 @@
     }
     function update(nextSentences = [], meta = {}) {
       if (destroyed) return;
-      const listChanged = optionOrder.length !== nextSentences.length ||
-        nextSentences.some((sentence, index) => sentence.id !== optionOrder[index] || sentence !== sentences[index]);
-      if (listChanged) loadingCandidates = null;
+      if (sentences.length !== nextSentences.length || sentences.some((sentence, index) => sentence !== nextSentences[index])) loadingCandidates = null;
       sentences = nextSentences;
-      if (listChanged) {
-        sentenceById.clear();
-        for (const sentence of sentences) sentenceById.set(sentence.id, sentence);
-      }
       loadingStopped = Boolean(meta.stopped || meta.changed && meta.error);
       scheduleAnimations();
       const total = meta.total ?? sentences.length;
       const completed = meta.completed ?? sentences.filter(item => item.status === "done" || item.status === "failed").length;
       const failed = meta.failed ?? sentences.filter(item => item.status === "failed").length;
-      const counts = meta.counts || { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
-      if (!meta.counts) {
-        for (const item of sentences) {
-          if (item.status === "failed") counts.failed++;
-          else if (item.status !== "done") continue;
-          else if (item.result?.decision === "SUPPORTED") counts.supported++;
-          else if (item.result?.decision === "REFUTED") counts.refuted++;
-          else counts.uncertain++;
-        }
+      const counts = { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
+      for (const item of sentences) {
+        if (item.status === "failed") counts.failed++;
+        else if (item.status !== "done") continue;
+        else if (item.result?.decision === "SUPPORTED") counts.supported++;
+        else if (item.result?.decision === "REFUTED") counts.refuted++;
+        else counts.uncertain++;
       }
       for (const [name, count] of Object.entries(counts)) {
         segments[name].style.width = (100 * count / Math.max(1, total)) + "%";
@@ -793,32 +785,29 @@
       retry.hidden = !failed;
       notice.textContent = meta.error || (meta.changed ? "Article changed. Select Rescan to check the current content." : "Newly loaded content is checked only after Rescan.");
       notice.className = meta.error ? "error" : "muted";
+      const ids = sentences.map(item => item.id).join("\n");
       const selected = select.value;
-      if (listChanged) {
+      if (ids !== optionIds) {
         optionNodes.clear();
-        optionStates.clear();
         select.replaceChildren(...sentences.map((sentence, index) => {
           const option = element("option");
           option.value = sentence.id;
           option.textContent = `${index + 1}. ${label(sentence)} · ${sentence.text.slice(0, 90)}`;
           optionNodes.set(sentence.id, option);
-          optionStates.set(sentence.id, [sentence.status, sentence.result?.decision]);
           return option;
         }));
-        optionOrder = sentences.map(sentence => sentence.id);
-        if (sentenceById.has(selected)) select.value = selected;
+        if (sentences.some(item => item.id === selected)) select.value = selected;
+        optionIds = ids;
       } else {
         sentences.forEach((sentence, index) => {
-          const state = optionStates.get(sentence.id);
-          if (state[0] === sentence.status && state[1] === sentence.result?.decision) return;
           const option = optionNodes.get(sentence.id);
-          option.textContent = `${index + 1}. ${label(sentence)} · ${sentence.text.slice(0, 90)}`;
-          optionStates.set(sentence.id, [sentence.status, sentence.result?.decision]);
+          const text = `${index + 1}. ${label(sentence)} · ${sentence.text.slice(0, 90)}`;
+          if (option.textContent !== text) option.textContent = text;
         });
       }
       select.disabled = previous.disabled = next.disabled = inspect.disabled = !sentences.length;
       if (current) {
-        const refreshed = sentenceById.get(current.id);
+        const refreshed = sentences.find(item => item.id === current.id);
         if (!refreshed) { hide(); if (guideAnnouncement) announce(guideAnnouncement); }
         else { current = refreshed; renderPopover(guideAnnouncement); }
       } else if (guideAnnouncement) announce(guideAnnouncement);

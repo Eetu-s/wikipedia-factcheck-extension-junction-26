@@ -4,11 +4,9 @@
   if (globalThis.WikiFactPageScan) return;
   // Sentences go to the backend in batches: one request checks up to BATCH_SIZE sentences
   // (one password check, one embedding call and one database write on the server).
-  // Keep at most 32 sentences in flight. A couple of extra batch slots let completed
-  // sentences refill the pipeline without waiting for the slowest item of each batch.
-  const CONCURRENCY = 6;
+  // CONCURRENCY is the number of batches in flight.
+  const CONCURRENCY = 4;
   const BATCH_SIZE = 8;
-  const MAX_IN_FLIGHT = 32;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
   let scan = null;
@@ -22,7 +20,7 @@
     type, scanId: current?.id, ...extra,
   });
   const live = (current) => scan === current && !current.invalid && location.href === current.url;
-  const valid = (sentence, revision) => sentence.isValid ? sentence.isValid(revision) :
+  const valid = (sentence) => sentence.isValid ? sentence.isValid() :
     sentence.range.startContainer.isConnected && sentence.range.endContainer.isConnected;
   const ranges = (sentence) => sentence.ranges || [sentence.range];
 
@@ -33,35 +31,20 @@
       if (!scan) return;
       // Failed checks (links, captions and other text the backend can't check) are simply not
       // shown: no highlight, not counted, not listed.
-      if (!scan.highlights && globalThis.CSS?.highlights && globalThis.Highlight) {
-        scan.highlights = Object.fromEntries(names.map((name) => [name, new Highlight()]));
-        for (const name of names) CSS.highlights.set("wfc-" + name, scan.highlights[name]);
+      const shown = scan.sentences.filter((s) => s.status !== "failed");
+      const groups = Object.fromEntries(names.map((name) => [name, []]));
+      for (const sentence of shown) {
+        if (scan.invalid || scan.ui.isAnimating(sentence)) continue;
+        const group = sentence.status !== "done" ? "pending" :
+          sentence.result.decision === "SUPPORTED" ? "supported" :
+            sentence.result.decision === "REFUTED" ? "refuted" : "uncertain";
+        groups[group].push(...ranges(sentence));
       }
-      const shown = [], counts = { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
-      let completed = 0;
-      for (const sentence of scan.sentences) {
-        const decision = sentence.result?.decision === "SUPPORTED" ? "supported" :
-          sentence.result?.decision === "REFUTED" ? "refuted" : "uncertain";
-        if (sentence.status !== "failed") {
-          shown.push(sentence);
-          if (sentence.status === "done") { completed++; counts[decision]++; }
-        }
-        if (!scan.highlights) continue;
-        const group = scan.invalid || sentence.status === "failed" || scan.ui.isAnimating(sentence) ? null :
-          sentence.status === "done" ? decision : "pending";
-        const previous = scan.highlightGroups.get(sentence.id) || null;
-        if (previous === group) continue;
-        // Keep registered Highlight objects and move only changed ranges, instead of
-        // allocating copies of every article range after each streamed answer.
-        for (const range of ranges(sentence)) {
-          if (previous) scan.highlights[previous].delete(range);
-          if (group) scan.highlights[group].add(range);
-        }
-        if (group) scan.highlightGroups.set(sentence.id, group);
-        else scan.highlightGroups.delete(sentence.id);
+      if (globalThis.CSS?.highlights && globalThis.Highlight) {
+        for (const name of names) CSS.highlights.set("wfc-" + name, new Highlight(...groups[name]));
       }
       scan.ui.update(shown, {
-        total: shown.length, completed, counts, failed: 0,
+        total: shown.length, completed: shown.filter((s) => s.status === "done").length, failed: 0,
         stopped: scan.stopped, changed: scan.changed, error: scan.error,
       });
     });
@@ -108,9 +91,6 @@
     renderFrame = hoverFrame = pumpFrame = 0;
     if (!old) return;
     old.invalid = true;
-    for (const [key, entry] of waiting) {
-      if (entry.current === old) waiting.delete(key);
-    }
     old.observer?.disconnect();
     clearInterval(old.navigationTimer);
     old.ui.destroy();
@@ -129,42 +109,33 @@
     if (scan && location.href !== scan.url) clear();
   }
 
-  function visible(sentence, current) {
-    if (sentence.visibilityEpoch === current.visibilityEpoch) return sentence.visible;
+  function visible(sentence) {
     const rect = sentence.range.getBoundingClientRect();
-    sentence.visibilityEpoch = current.visibilityEpoch;
-    sentence.visible = rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
-    return sentence.visible;
+    return rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
   }
 
   function pump(current = scan) {
-    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || current.inFlight >= MAX_IN_FLIGHT) return;
+    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY) return;
     clearTimeout(wakeTimer);
     const now = Date.now();
     if (current.cooldown > now) {
       wakeTimer = setTimeout(() => pump(current), current.cooldown - now);
       return;
     }
-    const capacity = Math.min((CONCURRENCY - current.active) * BATCH_SIZE, MAX_IN_FLIGHT - current.inFlight);
-    // Refill with full batches so streaming individual answers doesn't turn into
-    // one embedding/password request per sentence.
-    if (current.inFlight && capacity < BATCH_SIZE) return;
-    // Geometry is stable until scrolling, resizing or a host-page mutation. Reuse
-    // those reads across batches instead of remeasuring the entire remaining article.
+    // Read each candidate's geometry at most once, and stop once enough visible
+    // sentences can fill the available slots. The snapshot retains the rest of the queue.
+    const capacity = (CONCURRENCY - current.active) * BATCH_SIZE;
     const visiblePending = [], offscreenPending = [];
     for (const sentence of current.sentences) {
       if (sentence.status !== "pending" || sentence.retryAt > now) continue;
-      if (visible(sentence, current)) visiblePending.push(sentence);
+      if (visible(sentence)) visiblePending.push(sentence);
       else if (offscreenPending.length < capacity) offscreenPending.push(sentence);
       if (visiblePending.length === capacity) break;
     }
     const pending = visiblePending.concat(offscreenPending).slice(0, capacity);
-    // All checks here are synchronous; share one fresh view of metadata and context
-    // blocks across the batch, without keeping validation results across DOM events.
-    const validationRevision = {};
     while (current.active < CONCURRENCY && pending.length) {
       const batch = pending.splice(0, BATCH_SIZE);
-      if (!batch.every((sentence) => valid(sentence, validationRevision))) {
+      if (!batch.every(valid)) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
         return;
       }
@@ -173,11 +144,7 @@
         return ++sentence.version;
       });
       current.active++;
-      current.inFlight += batch.length;
-      const request = fastBatch(current, batch, versions);
-      current.batches.add(request);
-      request.finally(() => {
-        current.batches.delete(request);
+      fastBatch(current, batch, versions).finally(() => {
         current.active--;
         if (live(current)) { refresh(); pump(current); }
       });
@@ -189,16 +156,11 @@
 
   function schedulePump() {
     const current = scan;
-    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || current.inFlight >= MAX_IN_FLIGHT || pumpFrame) return;
+    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || pumpFrame) return;
     pumpFrame = requestAnimationFrame(() => {
       pumpFrame = 0;
       pump(current);
     });
-  }
-
-  function viewportChanged() {
-    if (scan) scan.visibilityEpoch++;
-    schedulePump();
   }
 
   // Sentences of in-flight batches, by scan id and sentence id, until their answer arrives.
@@ -206,31 +168,27 @@
   const waitingKey = (scanId, sentenceId) => scanId + "\n" + sentenceId;
 
   async function fastBatch(current, batch, versions) {
-    const batchId = ++current.batchCounter;
-    const entries = batch.map((sentence, index) => {
+    const keys = batch.map((sentence, index) => {
       const key = waitingKey(current.id, sentence.id);
-      const entry = { key, current, sentence, version: versions[index], batchId };
-      waiting.set(key, entry);
-      return entry;
+      waiting.set(key, { current, sentence, version: versions[index] });
+      return key;
     });
     let response;
     try {
       // Answers arrive one by one as WFC_FAST_ITEM messages while this request is open.
       response = await send("WFC_FAST_BATCH", {
-        batchId,
         items: batch.map((sentence) => ({ sentenceId: sentence.id, text: sentence.text, context: sentence.context })),
       }, current);
     } catch (error) {
       response = { error: error.message };
     }
     // Whatever didn't get its own answer gets the batch's: stale, an error, or a missing result.
-    const validationRevision = {};
-    for (const entry of entries) {
-      if (waiting.get(entry.key) !== entry) continue;
-      waiting.delete(entry.key);
-      entry.current.inFlight--;
+    for (const key of keys) {
+      const entry = waiting.get(key);
+      if (!entry) continue;
+      waiting.delete(key);
       applyFast(entry.current, entry.sentence, entry.version,
-        response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." }, validationRevision);
+        response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." });
     }
   }
 
@@ -238,18 +196,17 @@
   function fastItem(message) {
     const key = waitingKey(message.scanId, message.sentenceId);
     const entry = waiting.get(key);
-    if (!entry || entry.batchId !== message.batchId) return;
+    if (!entry) return;
     waiting.delete(key);
-    entry.current.inFlight--;
     applyFast(entry.current, entry.sentence, entry.version, message.answer);
-    if (live(entry.current)) { refresh(); schedulePump(); }
+    if (live(entry.current)) refresh();
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
-  function applyFast(current, sentence, version, response, validationRevision) {
+  function applyFast(current, sentence, version, response) {
     try {
       if (!live(current) || current.stopped || sentence.status !== "running" || sentence.version !== version) return;
-      if (!valid(sentence, validationRevision)) return invalidate(current, "Article text changed. Choose Rescan.");
+      if (!valid(sentence)) return invalidate(current, "Article text changed. Choose Rescan.");
       if (response?.stale) return invalidate(current, "The page changed. Choose Rescan.");
       if (response?.error) {
         if (response.status === 429 && sentence.attempts++ < MAX_RETRIES) {
@@ -287,13 +244,6 @@
     const cancellation = current.cancelFast;
     await cancellation;
     if (!live(current) || current.cancelFast !== cancellation) return;
-    if (cancellation) {
-      // Cancellation acknowledgement can precede the old requests' replies. Drain them
-      // before reusing sentence IDs, so their cleanup cannot consume retry entries.
-      await Promise.allSettled([...current.batches]);
-      if (!live(current) || current.cancelFast !== cancellation) return;
-      current.cancelFast = null;
-    }
     for (const sentence of current.sentences) {
       if (["failed", "stopped"].includes(sentence.status)) {
         sentence.status = "pending";
@@ -347,9 +297,8 @@
     const node = caret?.offsetNode || legacy?.startContainer;
     const offset = caret?.offset ?? legacy?.startOffset;
     if (!node) return null;
-    const validationRevision = {};
     for (const sentence of scan.byNode.get(node) || []) {
-      if (!valid(sentence, validationRevision) || sentence.status === "failed") continue;
+      if (!valid(sentence) || sentence.status === "failed") continue;
       if (!sentence.segments.some((segment) => segment.node === node && offset >= segment.start && offset <= segment.end)) continue;
       if (ranges(sentence).some((range) => [...range.getClientRects()].some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom))) return sentence;
     }
@@ -389,9 +338,7 @@
     }
     const current = {
       id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""),
-      url: location.href, article, style, active: 0, inFlight: 0, visibilityEpoch: 0,
-      batches: new Set(), batchCounter: 0,
-      highlightGroups: new Map(),
+      url: location.href, article, style, active: 0,
       cooldown: 0, stopped: false, invalid: false, changed: false, byNode: new WeakMap(),
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };
@@ -414,9 +361,7 @@
       const relevant = mutations.filter((m) => !m.target.parentElement?.closest("[data-wfc-ui]") &&
         !m.target.closest?.("[data-wfc-ui]"));
       if (!relevant.length) return;
-      current.visibilityEpoch++;
-      const validationRevision = {};
-      if (current.article.isValid ? !current.article.isValid(validationRevision) : current.sentences.some((s) => !valid(s, validationRevision))) {
+      if (current.article.isValid ? !current.article.isValid() : current.sentences.some((s) => !valid(s))) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
       } else if (relevant.some((m) => m.type === "childList" && [...m.addedNodes].some((node) =>
         (node.textContent || "").trim() && (m.target === current.article.root || current.article.root?.contains(m.target))))) {
@@ -459,12 +404,7 @@
     scan.ui.show(sentence, { x: event.clientX, y: event.clientY, pinned: true });
     if (sentence.status === "done") analyze(sentence.id);
   }, true);
-  window.addEventListener("scroll", viewportChanged, { passive: true, capture: true });
-  window.addEventListener("resize", viewportChanged, { passive: true });
-  window.visualViewport?.addEventListener("scroll", viewportChanged, { passive: true });
-  window.visualViewport?.addEventListener("resize", viewportChanged, { passive: true });
-  document.addEventListener("load", viewportChanged, true);
-  document.fonts?.addEventListener("loadingdone", viewportChanged);
+  window.addEventListener("scroll", schedulePump, { passive: true });
   window.addEventListener("pagehide", () => { clear(); });
   window.addEventListener("popstate", closeOnNavigation);
   window.addEventListener("hashchange", closeOnNavigation);

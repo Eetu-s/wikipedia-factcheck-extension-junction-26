@@ -40,13 +40,6 @@ to analyze the chosen sentence.
 The guide includes progress, legend, **Stop**, **Clear**, **Rescan**, and **Retry failed**.
 Its **×** closes the overlay and clears the scan. Navigating or switching away from the
 tab also closes it; leaving the browser window dismisses the sentence popover.
-Up to 32 sentences are checked concurrently in streamed batches of eight, with visible
-sentences prioritized and the entire extracted article eventually processed. Completed
-sentences free capacity for the next batch without waiting for every slow response; at most
-six batch requests remain open. Sentence positions are reused until scrolling, resizing,
-resource loading, or page changes require new measurements. Checks use the saved password
-with `/api/factcheck/batch/`, which bypasses the public API and production proxy rate limits.
-Upstream model-provider rate limits still pause the queue with bounded retries.
 Sentences go to `/api/factcheck/batch/` in batches of 8, with up to 4 batches (32 sentences)
 in flight. Visible sentences go first, and the whole extracted article is eventually
 processed. Each answer streams back as soon as its decision finishes, so a batch never waits
@@ -143,22 +136,6 @@ starts deep work; the action is idempotent across repeated requests. Poll
 `paragraphs`, `errors`, `unverified_facts`, and `incomplete`. Correction offsets use Unicode
 code points into the saved original sentence and are validated without relocating phrases.
 Polling and cached results never start analysis.
-
-Page scans use `POST /api/factcheck/batch/` with up to ten `{text, sentence_id, context}`
-items and the saved password. With `stream: true`, each NDJSON line carries its original
-`index` and either the fast result or an error with optional `retry_after` seconds. Results
-are stored before delivery so deeper analysis can start immediately. Without streaming,
-the response is `{"results": [...]}` in input order. A batch shares one embedding call;
-retrieval ranks candidates first, then loads the selected Wikipedia bodies once per unique
-article, retaining each sentence's matching paragraphs.
-
-Page scans use `POST /api/factcheck/batch/` with up to ten `{text, sentence_id, context}`
-items and the saved password. With `stream: true`, each NDJSON line carries its original
-`index` and either the fast result or an error with optional `retry_after` seconds. Results
-are stored before delivery so deeper analysis can start immediately. Without streaming,
-the response is `{"results": [...]}` in input order. A batch shares one embedding call;
-retrieval ranks candidates first, then loads the selected Wikipedia bodies once per unique
-article, retaining each sentence's matching paragraphs.
 
 Page scans use `POST /api/factcheck/batch/`, which runs the same fast check for up to 10
 sentences per request:

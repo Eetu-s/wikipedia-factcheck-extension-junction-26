@@ -1,20 +1,17 @@
 import json
 import logging
 import math
-import urllib.parse
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 import pymysql
-import urllib3
 from django.conf import settings
 from wikirag import EmbeddingError, chunk_search, semantic_search
-from wikirag import config as rag_config
 from wikirag.db import connect
 from wikirag.embedding import embed_many
-from wikirag.search import CHUNK_CANDIDATES, article_excerpt, article_paragraphs, article_texts
 
 from .context import CONTEXT_RULES, context_input, retrieval_query
 
@@ -57,22 +54,6 @@ SOURCE_THRESHOLD = 0.5
 # Docs: https://aistudio.google.com/docs/decisions-api
 GEMINI_MODEL = "gemini-decision-1"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/decisions"
-
-# Keep HTTPS connections across batches, whose executor threads are short-lived. urllib3's
-# pool is thread-safe; unlike a shared Session it has no mutable cookies or request headers.
-# Preserve urllib's proxy/no-proxy configuration and never automatically repeat a paid POST.
-_gemini_proxy = (None if urllib.request.proxy_bypass("generativelanguage.googleapis.com")
-                 else urllib.request.getproxies().get("https"))
-_gemini_pool_options = {"num_pools": 2, "maxsize": 64, "retries": False}
-if _gemini_proxy:
-    _gemini_proxy_auth = urllib3.util.parse_url(_gemini_proxy).auth
-    _gemini_http = urllib3.ProxyManager(
-        _gemini_proxy, **_gemini_pool_options,
-        proxy_headers=(urllib3.make_headers(proxy_basic_auth=urllib.parse.unquote(_gemini_proxy_auth))
-                       if _gemini_proxy_auth else None),
-    )
-else:
-    _gemini_http = urllib3.PoolManager(**_gemini_pool_options)
 
 VERDICT_QUESTION = {
     "type": "choice",
@@ -164,8 +145,7 @@ def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
 
     Each claim searches both whole-article vectors (article_vector: History of Finland in
     fi/sv/en) and paragraph vectors (chunk_vector: English Wikipedia), and the two rankings are
-    fused (see fuse_rankings). Either table may be missing or empty. Evidence bodies are
-    fetched only after fusion, once per unique article across the whole batch.
+    fused (see fuse_rankings). Either table may be missing or empty.
     """
     try:
         vectors = embed_many(claims)
@@ -178,35 +158,17 @@ def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
     searches = [semantic_search, chunk_search]
     try:
         cursor = con.cursor()
-        # Normally both vector searches use the same breadth. Configure it once for this
-        # connection instead of sending two identical SET statements for every sentence.
-        shared_search_config = rag_config.EF_SEARCH >= CHUNK_CANDIDATES
-        if shared_search_config:
-            cursor.execute(f"SET SESSION mhnsw_ef_search = {int(rag_config.EF_SEARCH)}")
         results = []
         for claim, vector in zip(claims, vectors):
             rankings = []
             for search in list(searches):
                 try:
-                    options = {"configure_session": not shared_search_config}
-                    if search is semantic_search:
-                        options["with_languages"] = False
-                    rankings.append(search(cursor, claim, limit=RAG_ARTICLES, vector=vector,
-                                           with_text=False, **options))
+                    rankings.append(search(cursor, claim, limit=RAG_ARTICLES, vector=vector))
                 except pymysql.ProgrammingError as e:
                     if e.args[0] != NO_SUCH_TABLE:
                         raise
                     searches.remove(search)  # Its data isn't loaded; skip it for the rest.
             results.append(fuse_rankings(rankings, RAG_ARTICLES))
-        # Adjacent sentences tend to retrieve the same Wikipedia articles. Load each body
-        # once for the batch, after distant candidates and losing rankings have been removed.
-        selected = [row for rows in results for row in rows]
-        texts = article_texts(cursor, [row for row in selected if "matched" not in row])
-        paragraphs = article_paragraphs(cursor, [row for row in selected if "matched" in row])
-        for row in selected:
-            key = (row["lang"], row["page_id"])
-            row["text"] = (article_excerpt(paragraphs.get(key, []), row["matched"], RAG_ARTICLE_CHARS)
-                           if "matched" in row else texts.get(key, ""))
     except pymysql.MySQLError as e:
         raise CheckerError(f"RAG search failed: {e}") from e
     finally:
@@ -306,29 +268,25 @@ def ask_gemini(claim: str, articles: list[dict], context: dict | None = None) ->
         "input": build_input(claim, articles, context),
         "questions": questions,
     }
+    request = urllib.request.Request(
+        GEMINI_URL,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY},
+    )
     try:
-        # Preload/consume the small response so the connection returns to the pool. Redirects
-        # are disabled too: they must not resubmit a billed request or forward its API key.
-        with _gemini_http.request(
-            "POST", GEMINI_URL, body=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", "x-goog-api-key": settings.GEMINI_API_KEY},
-            timeout=30, retries=False, redirect=False, preload_content=True,
-        ) as response:
-            if not 200 <= response.status < 300:
-                retry_after = None
-                if response.status == 429:
-                    try:
-                        retry_after = min(300, max(1, int(response.headers.get("Retry-After", "1"))))
-                    except (ValueError, TypeError):
-                        retry_after = 1
-                # Provider error bodies may contain credentials or request data.
-                raise CheckerError(f"Gemini returned HTTP {response.status}.", retry_after=retry_after)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as e:
+        retry_after = None
+        if e.code == 429:
             try:
-                data = json.loads(response.data)
-            except (ValueError, UnicodeDecodeError) as e:
-                raise CheckerError("Gemini's decision was not in the expected format.") from e
-    except (urllib3.exceptions.HTTPError, OSError) as e:
-        raise CheckerError("Can't reach Gemini. Please retry.") from e
+                retry_after = min(300, max(1, int((e.headers or {}).get("Retry-After", "1"))))
+            except (ValueError, TypeError):
+                retry_after = 1
+        # Provider error bodies may contain credentials or request data. Keep them server-side.
+        raise CheckerError(f"Gemini returned HTTP {e.code}.", retry_after=retry_after) from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise CheckerError(f"Can't reach Gemini: {e}") from e
     # Answers come back under the same keys as the questions.
     if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
         raise CheckerError("Gemini's decision was not in the expected format.")
