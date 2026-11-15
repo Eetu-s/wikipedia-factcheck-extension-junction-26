@@ -76,7 +76,7 @@ const selectedMetrics = ['LayoutCount', 'RecalcStyleCount', 'LayoutDuration', 'R
         request.finished = true;
         const answer = { result: { check_id: 'benchmark-check-' + ++bench.answered,
           decision: bench.answered % 3 === 0 ? 'REFUTED' : 'SUPPORTED', confidence: .9, sources: [] } };
-        for (const listener of bench.listeners) listener({ type: 'WFC_FAST_ITEM', scanId: request.message.scanId, sentenceId: request.message.sentenceId, answer }, {}, () => {});
+        for (const listener of bench.listeners) listener({ type: 'WFC_FAST_ITEM', scanId: request.message.scanId, batchId: request.message.batchId, sentenceId: request.message.sentenceId, answer }, {}, () => {});
         if (--request.batch.remaining === 0) request.batch.resolve({});
       };
     });

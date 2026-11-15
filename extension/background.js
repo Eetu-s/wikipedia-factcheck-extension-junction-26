@@ -218,7 +218,7 @@ async function pageMessage(message, sender) {
 
 // Fast checks for several sentences in one streamed backend request (one password hash, one
 // embedding call and grouped database writes on the server). Each sentence's answer goes to the
-// page as soon as it arrives, as { type: "WFC_FAST_ITEM", scanId, sentenceId, answer }, where
+// page as soon as it arrives, as { type: "WFC_FAST_ITEM", scanId, batchId, sentenceId, answer }, where
 // answer is { result } or { error, status, retryAfter }. The reply itself comes after every item
 // message: {} when the stream is complete, { stale: true }, or a thrown error for the whole request.
 // The page scan applies the reply to any sentence of the batch it hasn't had an answer for.
@@ -233,7 +233,7 @@ async function pageBatch(message, sender, tabId, scanKey, backendUrl) {
     JSON.stringify([backendUrl, tabId, sender.url, item.sentenceId, item.text, item.context]);
   const deliveries = [];
   const deliver = (item, answer) => deliveries.push(chrome.tabs.sendMessage(tabId, {
-    type: "WFC_FAST_ITEM", scanId: message.scanId, sentenceId: item.sentenceId, answer,
+    type: "WFC_FAST_ITEM", scanId: message.scanId, batchId: message.batchId, sentenceId: item.sentenceId, answer,
   }, { frameId: 0 }).catch(() => {}));
 
   const misses = [];
@@ -271,7 +271,24 @@ async function pageBatch(message, sender, tabId, scanKey, backendUrl) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let received = 0;
+    const received = new Set();
+    const acceptLine = (line) => {
+      if (!line.trim()) return;
+      let answer;
+      try {
+        answer = JSON.parse(line);
+      } catch (e) {
+        return;
+      }
+      if (!Number.isInteger(answer?.index) || received.has(answer.index)) return;
+      const item = misses[answer.index];
+      if (!item) return;
+      received.add(answer.index);
+      deliver(item, pageAnswer(answer, () => {
+        pageCache.set(cacheKeyOf(item), { at: Date.now(), result: answer });
+        if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
+      }));
+    };
     for (;;) {
       let chunk;
       try {
@@ -279,36 +296,30 @@ async function pageBatch(message, sender, tabId, scanKey, backendUrl) {
       } catch (e) {
         throw new Error(controller.signal.aborted ? "Request cancelled or timed out." : "The connection to the backend was lost.");
       }
-      if (chunk.done) break;
+      if (chunk.done) {
+        buffer += decoder.decode();
+        if (!buffer.trim()) break;
+      }
+      // Validate once per chunk, then process its lines synchronously. Awaiting extension
+      // storage for every sentence serializes answers that arrived together unnecessarily.
+      if (!(await stillCurrent())) {
+        controller.abort();
+        return { stale: true };
+      }
+      if (chunk.done) {
+        acceptLine(buffer); // A final NDJSON line need not have a trailing newline.
+        break;
+      }
       resetTimer();
       buffer += decoder.decode(chunk.value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        if (!(await stillCurrent())) {
-          controller.abort();
-          return { stale: true };
-        }
-        let answer;
-        try {
-          answer = JSON.parse(line);
-        } catch (e) {
-          continue;
-        }
-        const item = misses[answer.index];
-        if (!item) continue;
-        received++;
-        deliver(item, pageAnswer(answer, () => {
-          pageCache.set(cacheKeyOf(item), { at: Date.now(), result: answer });
-          if (pageCache.size > 500) pageCache.delete(pageCache.keys().next().value);
-        }));
-      }
+      for (const line of lines) acceptLine(line);
     }
     // Every item message must reach the page before this reply does.
     await Promise.all(deliveries);
     if (!(await stillCurrent())) return { stale: true };
-    if (received < misses.length) throw new Error("Update the backend to support streamed page checks.");
+    if (received.size < misses.length) throw new Error("Update the backend to support streamed page checks.");
     return {};
   } finally {
     clearTimeout(timer);

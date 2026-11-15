@@ -4,9 +4,11 @@
   if (globalThis.WikiFactPageScan) return;
   // Sentences go to the backend in batches: one request checks up to BATCH_SIZE sentences
   // (one password check, one embedding call and one database write on the server).
-  // CONCURRENCY is the number of batches in flight.
-  const CONCURRENCY = 4;
+  // Keep at most 32 sentences in flight. A couple of extra batch slots let completed
+  // sentences refill the pipeline without waiting for the slowest item of each batch.
+  const CONCURRENCY = 6;
   const BATCH_SIZE = 8;
+  const MAX_IN_FLIGHT = 32;
   const MAX_RETRIES = 3;
   const names = ["pending", "supported", "refuted", "uncertain", "failed"];
   let scan = null;
@@ -91,6 +93,9 @@
     renderFrame = hoverFrame = pumpFrame = 0;
     if (!old) return;
     old.invalid = true;
+    for (const [key, entry] of waiting) {
+      if (entry.current === old) waiting.delete(key);
+    }
     old.observer?.disconnect();
     clearInterval(old.navigationTimer);
     old.ui.destroy();
@@ -109,26 +114,32 @@
     if (scan && location.href !== scan.url) clear();
   }
 
-  function visible(sentence) {
+  function visible(sentence, current) {
+    if (sentence.visibilityEpoch === current.visibilityEpoch) return sentence.visible;
     const rect = sentence.range.getBoundingClientRect();
-    return rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+    sentence.visibilityEpoch = current.visibilityEpoch;
+    sentence.visible = rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+    return sentence.visible;
   }
 
   function pump(current = scan) {
-    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY) return;
+    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || current.inFlight >= MAX_IN_FLIGHT) return;
     clearTimeout(wakeTimer);
     const now = Date.now();
     if (current.cooldown > now) {
       wakeTimer = setTimeout(() => pump(current), current.cooldown - now);
       return;
     }
-    // Read each candidate's geometry at most once, and stop once enough visible
-    // sentences can fill the available slots. The snapshot retains the rest of the queue.
-    const capacity = (CONCURRENCY - current.active) * BATCH_SIZE;
+    const capacity = Math.min((CONCURRENCY - current.active) * BATCH_SIZE, MAX_IN_FLIGHT - current.inFlight);
+    // Refill with full batches so streaming individual answers doesn't turn into
+    // one embedding/password request per sentence.
+    if (current.inFlight && capacity < BATCH_SIZE) return;
+    // Geometry is stable until scrolling, resizing or a host-page mutation. Reuse
+    // those reads across batches instead of remeasuring the entire remaining article.
     const visiblePending = [], offscreenPending = [];
     for (const sentence of current.sentences) {
       if (sentence.status !== "pending" || sentence.retryAt > now) continue;
-      if (visible(sentence)) visiblePending.push(sentence);
+      if (visible(sentence, current)) visiblePending.push(sentence);
       else if (offscreenPending.length < capacity) offscreenPending.push(sentence);
       if (visiblePending.length === capacity) break;
     }
@@ -144,7 +155,11 @@
         return ++sentence.version;
       });
       current.active++;
-      fastBatch(current, batch, versions).finally(() => {
+      current.inFlight += batch.length;
+      const request = fastBatch(current, batch, versions);
+      current.batches.add(request);
+      request.finally(() => {
+        current.batches.delete(request);
         current.active--;
         if (live(current)) { refresh(); pump(current); }
       });
@@ -156,11 +171,16 @@
 
   function schedulePump() {
     const current = scan;
-    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || pumpFrame) return;
+    if (!current || !live(current) || current.stopped || current.active >= CONCURRENCY || current.inFlight >= MAX_IN_FLIGHT || pumpFrame) return;
     pumpFrame = requestAnimationFrame(() => {
       pumpFrame = 0;
       pump(current);
     });
+  }
+
+  function viewportChanged() {
+    if (scan) scan.visibilityEpoch++;
+    schedulePump();
   }
 
   // Sentences of in-flight batches, by scan id and sentence id, until their answer arrives.
@@ -168,25 +188,28 @@
   const waitingKey = (scanId, sentenceId) => scanId + "\n" + sentenceId;
 
   async function fastBatch(current, batch, versions) {
-    const keys = batch.map((sentence, index) => {
+    const batchId = ++current.batchCounter;
+    const entries = batch.map((sentence, index) => {
       const key = waitingKey(current.id, sentence.id);
-      waiting.set(key, { current, sentence, version: versions[index] });
-      return key;
+      const entry = { key, current, sentence, version: versions[index], batchId };
+      waiting.set(key, entry);
+      return entry;
     });
     let response;
     try {
       // Answers arrive one by one as WFC_FAST_ITEM messages while this request is open.
       response = await send("WFC_FAST_BATCH", {
+        batchId,
         items: batch.map((sentence) => ({ sentenceId: sentence.id, text: sentence.text, context: sentence.context })),
       }, current);
     } catch (error) {
       response = { error: error.message };
     }
     // Whatever didn't get its own answer gets the batch's: stale, an error, or a missing result.
-    for (const key of keys) {
-      const entry = waiting.get(key);
-      if (!entry) continue;
-      waiting.delete(key);
+    for (const entry of entries) {
+      if (waiting.get(entry.key) !== entry) continue;
+      waiting.delete(entry.key);
+      entry.current.inFlight--;
       applyFast(entry.current, entry.sentence, entry.version,
         response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." });
     }
@@ -196,10 +219,11 @@
   function fastItem(message) {
     const key = waitingKey(message.scanId, message.sentenceId);
     const entry = waiting.get(key);
-    if (!entry) return;
+    if (!entry || entry.batchId !== message.batchId) return;
     waiting.delete(key);
+    entry.current.inFlight--;
     applyFast(entry.current, entry.sentence, entry.version, message.answer);
-    if (live(entry.current)) refresh();
+    if (live(entry.current)) { refresh(); schedulePump(); }
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
@@ -244,6 +268,13 @@
     const cancellation = current.cancelFast;
     await cancellation;
     if (!live(current) || current.cancelFast !== cancellation) return;
+    if (cancellation) {
+      // Cancellation acknowledgement can precede the old requests' replies. Drain them
+      // before reusing sentence IDs, so their cleanup cannot consume retry entries.
+      await Promise.allSettled([...current.batches]);
+      if (!live(current) || current.cancelFast !== cancellation) return;
+      current.cancelFast = null;
+    }
     for (const sentence of current.sentences) {
       if (["failed", "stopped"].includes(sentence.status)) {
         sentence.status = "pending";
@@ -338,7 +369,8 @@
     }
     const current = {
       id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""),
-      url: location.href, article, style, active: 0,
+      url: location.href, article, style, active: 0, inFlight: 0, visibilityEpoch: 0,
+      batches: new Set(), batchCounter: 0,
       cooldown: 0, stopped: false, invalid: false, changed: false, byNode: new WeakMap(),
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };
@@ -361,6 +393,7 @@
       const relevant = mutations.filter((m) => !m.target.parentElement?.closest("[data-wfc-ui]") &&
         !m.target.closest?.("[data-wfc-ui]"));
       if (!relevant.length) return;
+      current.visibilityEpoch++;
       if (current.article.isValid ? !current.article.isValid() : current.sentences.some((s) => !valid(s))) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
       } else if (relevant.some((m) => m.type === "childList" && [...m.addedNodes].some((node) =>
@@ -404,7 +437,12 @@
     scan.ui.show(sentence, { x: event.clientX, y: event.clientY, pinned: true });
     if (sentence.status === "done") analyze(sentence.id);
   }, true);
-  window.addEventListener("scroll", schedulePump, { passive: true });
+  window.addEventListener("scroll", viewportChanged, { passive: true, capture: true });
+  window.addEventListener("resize", viewportChanged, { passive: true });
+  window.visualViewport?.addEventListener("scroll", viewportChanged, { passive: true });
+  window.visualViewport?.addEventListener("resize", viewportChanged, { passive: true });
+  document.addEventListener("load", viewportChanged, true);
+  document.fonts?.addEventListener("loadingdone", viewportChanged);
   window.addEventListener("pagehide", () => { clear(); });
   window.addEventListener("popstate", closeOnNavigation);
   window.addEventListener("hashchange", closeOnNavigation);

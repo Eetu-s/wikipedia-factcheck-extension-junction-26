@@ -28,6 +28,33 @@ not mean playback draws nothing: the canvas updates its cached raster at 30fps.
 The comparison includes steady loading and bursty results, and does not include
 backend/model latency.
 
+## Whole-page scan throughput
+
+The queue also has deterministic regressions covering a complete 1,800-sentence
+scan, separate from the animation benchmark above. With ten visible sentences and
+a stable viewport, the previous queue measured sentence positions 198,048 times;
+cached visibility reduces that to 1,800, one read per sentence. Scrolling, resizing,
+host-page mutations, and resource loading invalidate the cache.
+
+Individual streamed answers now release sentence capacity before their whole
+batch finishes. For example, two answers from each of the four initial batches
+can start another eight-sentence batch immediately, while the slower answers
+continue. There are still at most 32 outstanding sentences and six open requests;
+provider rate limits pause all new work and retain bounded retries.
+
+Backend retrieval first merges vector rankings, then fetches evidence only for
+the selected articles. An eight-sentence fixture sharing Wikipedia sources uses
+34 SQL executions instead of 72, with each unique article body fetched once per
+batch. The same ranking, article text, sentence-specific excerpts, and model
+inputs are preserved. Stream transport validates the scan once per received
+network chunk instead of awaiting extension storage separately for each answer.
+
+These measurements count avoided work with mocked transport/database responses;
+they do not measure live Ollama or Gemini latency. Run the queue and transport
+regressions with `node extension/tests/page-queue.test.cjs` and
+`node extension/tests/background.test.cjs`. The backend retrieval and streaming
+contracts are covered by `python manage.py test factcheck.test_batch`.
+
 ## Findings and changes
 
 - A CPU profile attributed 72.6% of sampled time to rewriting every sentence menu

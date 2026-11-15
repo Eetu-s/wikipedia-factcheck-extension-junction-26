@@ -86,7 +86,7 @@ def article_texts(cursor, rows):
     """{(lang, page_id): text} for the given result rows, in one query."""
     if not rows:
         return {}
-    keys = [(r["lang"], r["page_id"]) for r in rows]
+    keys = list(dict.fromkeys((r["lang"], r["page_id"]) for r in rows))
     cursor.execute(
         "SELECT lang, page_id, text FROM article WHERE (lang, page_id) IN "
         f"({', '.join(['(%s, %s)'] * len(keys))})",
@@ -96,12 +96,13 @@ def article_texts(cursor, rows):
 
 
 def semantic_search(cursor, text, lang=None, category=None, limit=10, vector=None,
-                    with_text=True):
+                    with_text=True, with_languages=True):
     """Embed `text` (a question or a statement) and return the closest articles.
 
     Each result is a dict: lang, page_id, wikidata_id, title, url, distance (smaller is
     closer), other_languages [(lang, title, url)], and text (unless with_text=False).
     Pass `vector` to skip embedding (the evaluation does, to time the two apart).
+    Set with_languages=False when only the matched version is needed.
     """
     if vector is None:
         vector = embed(text)
@@ -110,7 +111,7 @@ def semantic_search(cursor, text, lang=None, category=None, limit=10, vector=Non
     cursor.execute(sql, params)
     rows = _dicts(cursor)
 
-    versions = other_languages(cursor, rows)
+    versions = other_languages(cursor, rows) if with_languages else {}
     texts = article_texts(cursor, rows) if with_text else {}
     for r in rows:
         r["distance"] = float(r["distance"])
@@ -138,13 +139,31 @@ NEIGHBOURS = 2
 LEAD = 2
 
 
-def chunk_search(cursor, text, limit=3, candidates=40, max_chars=40_000, vector=None):
+def article_paragraphs(cursor, rows):
+    """{(lang, page_id): [(seq, text), ...]} for unique articles, in one query."""
+    if not rows:
+        return {}
+    keys = list(dict.fromkeys((r["lang"], r["page_id"]) for r in rows))
+    cursor.execute(
+        "SELECT lang, page_id, seq, text FROM chunk WHERE (lang, page_id) IN "
+        f"({', '.join(['(%s, %s)'] * len(keys))}) ORDER BY lang, page_id, seq",
+        [value for key in keys for value in key],
+    )
+    paragraphs = {}
+    for lang, page_id, seq, text in cursor.fetchall():
+        paragraphs.setdefault((lang, page_id), []).append((seq, text))
+    return paragraphs
+
+
+def chunk_search(cursor, text, limit=3, candidates=40, max_chars=40_000, vector=None,
+                 with_text=True):
     """The articles with the closest paragraphs, best first.
 
     Each result is a dict: lang, page_id, title, url, distance (of its closest paragraph),
     matched (paragraph numbers that matched), and text. When the whole article fits in
     max_chars, text is the whole article; otherwise it is the lead, the matching paragraphs and
-    their neighbours, with "[...]" where paragraphs were left out.
+    their neighbours, with "[...]" where paragraphs were left out. Pass with_text=False
+    to rank results first and load their paragraphs together after combining searches.
     """
     if vector is None:
         vector = embed(text)
@@ -159,10 +178,10 @@ def chunk_search(cursor, text, limit=3, candidates=40, max_chars=40_000, vector=
             articles[key] = {"lang": r["lang"], "page_id": r["page_id"], "title": r["title"],
                              "url": r["url"], "distance": float(r["distance"]), "matched": []}
         articles[key]["matched"].append(r["seq"])
-    for (lang, page_id), article in articles.items():
-        cursor.execute("SELECT seq, text FROM chunk WHERE lang = %s AND page_id = %s ORDER BY seq",
-                       [lang, page_id])
-        article["text"] = article_excerpt(cursor.fetchall(), article["matched"], max_chars)
+    if with_text:
+        paragraphs = article_paragraphs(cursor, list(articles.values()))
+        for key, article in articles.items():
+            article["text"] = article_excerpt(paragraphs.get(key, []), article["matched"], max_chars)
     return list(articles.values())
 
 

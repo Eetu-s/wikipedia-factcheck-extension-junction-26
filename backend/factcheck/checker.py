@@ -12,6 +12,7 @@ from django.conf import settings
 from wikirag import EmbeddingError, chunk_search, semantic_search
 from wikirag.db import connect
 from wikirag.embedding import embed_many
+from wikirag.search import article_excerpt, article_paragraphs, article_texts
 
 from .context import CONTEXT_RULES, context_input, retrieval_query
 
@@ -145,7 +146,8 @@ def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
 
     Each claim searches both whole-article vectors (article_vector: History of Finland in
     fi/sv/en) and paragraph vectors (chunk_vector: English Wikipedia), and the two rankings are
-    fused (see fuse_rankings). Either table may be missing or empty.
+    fused (see fuse_rankings). Either table may be missing or empty. Evidence bodies are
+    fetched only after fusion, once per unique article across the whole batch.
     """
     try:
         vectors = embed_many(claims)
@@ -163,12 +165,23 @@ def search_wikipedia_many(claims: list[str]) -> list[list[dict]]:
             rankings = []
             for search in list(searches):
                 try:
-                    rankings.append(search(cursor, claim, limit=RAG_ARTICLES, vector=vector))
+                    options = {"with_languages": False} if search is semantic_search else {}
+                    rankings.append(search(cursor, claim, limit=RAG_ARTICLES, vector=vector,
+                                           with_text=False, **options))
                 except pymysql.ProgrammingError as e:
                     if e.args[0] != NO_SUCH_TABLE:
                         raise
                     searches.remove(search)  # Its data isn't loaded; skip it for the rest.
             results.append(fuse_rankings(rankings, RAG_ARTICLES))
+        # Adjacent sentences tend to retrieve the same Wikipedia articles. Load each body
+        # once for the batch, after distant candidates and losing rankings have been removed.
+        selected = [row for rows in results for row in rows]
+        texts = article_texts(cursor, [row for row in selected if "matched" not in row])
+        paragraphs = article_paragraphs(cursor, [row for row in selected if "matched" in row])
+        for row in selected:
+            key = (row["lang"], row["page_id"])
+            row["text"] = (article_excerpt(paragraphs.get(key, []), row["matched"], RAG_ARTICLE_CHARS)
+                           if "matched" in row else texts.get(key, ""))
     except pymysql.MySQLError as e:
         raise CheckerError(f"RAG search failed: {e}") from e
     finally:
