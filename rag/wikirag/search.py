@@ -96,18 +96,20 @@ def article_texts(cursor, rows):
 
 
 def semantic_search(cursor, text, lang=None, category=None, limit=10, vector=None,
-                    with_text=True, with_languages=True):
+                    with_text=True, with_languages=True, configure_session=True):
     """Embed `text` (a question or a statement) and return the closest articles.
 
     Each result is a dict: lang, page_id, wikidata_id, title, url, distance (smaller is
     closer), other_languages [(lang, title, url)], and text (unless with_text=False).
     Pass `vector` to skip embedding (the evaluation does, to time the two apart).
     Set with_languages=False when only the matched version is needed.
+    Set configure_session=False only after configuring this connection's search breadth.
     """
     if vector is None:
         vector = embed(text)
     sql, params = build_query(vector, lang=lang, category=category, limit=limit)
-    cursor.execute(f"SET SESSION mhnsw_ef_search = {int(config.EF_SEARCH)}")
+    if configure_session:
+        cursor.execute(f"SET SESSION mhnsw_ef_search = {int(config.EF_SEARCH)}")
     cursor.execute(sql, params)
     rows = _dicts(cursor)
 
@@ -137,6 +139,7 @@ ORDER BY v.distance"""
 # of the article (its lead section, which usually summarizes the key facts).
 NEIGHBOURS = 2
 LEAD = 2
+CHUNK_CANDIDATES = 40
 
 
 def article_paragraphs(cursor, rows):
@@ -155,8 +158,8 @@ def article_paragraphs(cursor, rows):
     return paragraphs
 
 
-def chunk_search(cursor, text, limit=3, candidates=40, max_chars=40_000, vector=None,
-                 with_text=True):
+def chunk_search(cursor, text, limit=3, candidates=CHUNK_CANDIDATES, max_chars=40_000, vector=None,
+                 with_text=True, configure_session=True):
     """The articles with the closest paragraphs, best first.
 
     Each result is a dict: lang, page_id, title, url, distance (of its closest paragraph),
@@ -164,10 +167,12 @@ def chunk_search(cursor, text, limit=3, candidates=40, max_chars=40_000, vector=
     max_chars, text is the whole article; otherwise it is the lead, the matching paragraphs and
     their neighbours, with "[...]" where paragraphs were left out. Pass with_text=False
     to rank results first and load their paragraphs together after combining searches.
+    Set configure_session=False only after configuring at least max(EF_SEARCH, candidates).
     """
     if vector is None:
         vector = embed(text)
-    cursor.execute(f"SET SESSION mhnsw_ef_search = {int(max(config.EF_SEARCH, candidates))}")
+    if configure_session:
+        cursor.execute(f"SET SESSION mhnsw_ef_search = {int(max(config.EF_SEARCH, candidates))}")
     cursor.execute(CHUNK_SQL.strip(), [json.dumps(vector), candidates])
     articles = {}
     for r in _dicts(cursor):

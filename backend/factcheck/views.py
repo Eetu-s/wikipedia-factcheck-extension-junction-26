@@ -1,4 +1,5 @@
 import fcntl
+import hmac
 import json
 import logging
 import os
@@ -32,6 +33,12 @@ EXPLANATION_WAIT_SECONDS = 25
 RATELIMIT_SECONDS = 1.0
 RATELIMIT_FILE = os.path.join(tempfile.gettempdir(), "factcheck-ratelimit")
 logger = logging.getLogger(__name__)
+
+# Repeated batches and analysis polls share one password. Keep only its successful
+# keyed proof briefly, bound to the configured hash so password rotation takes effect at once.
+_PASSWORD_CACHE_SECRET = os.urandom(32)
+_PASSWORD_CACHE_SECONDS = 60
+_verified_password = None
 
 
 @require_GET
@@ -77,10 +84,7 @@ def factcheck(request):
     if not isinstance(body, dict):
         return JsonResponse({"error": "Request body must be a JSON object."}, status=400)
 
-    password = body.get("password")
-    if not isinstance(password, str) or not settings.FACTCHECK_PASSWORD_HASH or not check_password(
-        password, settings.FACTCHECK_PASSWORD_HASH
-    ):
+    if not authenticated_password(body.get("password")):
         return JsonResponse({"error": "Invalid password."}, status=401)
 
     return run_check(body)
@@ -190,8 +194,8 @@ def factcheck_batch(request):
     With "stream": true, the response is NDJSON instead: one {"index": int, ...answer} line per
     item, in the order the decisions finish.
 
-    The password is hashed once per batch, all retrieval queries are embedded in one call, the
-    Gemini decisions run in parallel, and the stored checks are written in one transaction.
+    Successful password verification is cached briefly. All retrieval queries are embedded
+    in one call, Gemini decisions run in parallel, and stored checks are grouped in transactions.
     """
     try:
         body = json.loads(request.body)
@@ -302,9 +306,19 @@ def batch_answer(item, outcome):
 
 
 def authenticated_password(password):
-    return isinstance(password, str) and bool(settings.FACTCHECK_PASSWORD_HASH) and check_password(
-        password, settings.FACTCHECK_PASSWORD_HASH
-    )
+    global _verified_password
+    encoded = settings.FACTCHECK_PASSWORD_HASH
+    if not isinstance(password, str) or not encoded:
+        return False
+    proof = hmac.digest(_PASSWORD_CACHE_SECRET, password.encode(), "sha256")
+    cached = _verified_password
+    if (cached is not None and cached[0] == encoded and time.monotonic() < cached[2]
+            and hmac.compare_digest(proof, cached[1])):
+        return True
+    if not check_password(password, encoded):
+        return False
+    _verified_password = (encoded, proof, time.monotonic() + _PASSWORD_CACHE_SECONDS)
+    return True
 
 
 def page_check_response(row):

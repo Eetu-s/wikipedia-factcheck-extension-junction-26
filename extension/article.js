@@ -39,15 +39,6 @@
     return (result >>> 0).toString(36);
   }
 
-  function nodePath(node) {
-    const path = [];
-    while (node && node.parentNode) {
-      path.push(Array.prototype.indexOf.call(node.parentNode.childNodes, node));
-      node = node.parentNode;
-    }
-    return path.reverse().join(".");
-  }
-
   function fullyClipped(css) {
     // Detect CSS clipping used for visually hidden accessibility text without relying
     // on viewport geometry (which would omit legitimate offscreen article content).
@@ -210,12 +201,13 @@
     const originalText = new Map();
     const originalOrder = new WeakMap();
     const originalLine = new WeakMap();
+    const originalPath = new WeakMap();
     let sequence = 0;
     let line = 0;
 
     // Walk the two trees in parallel. Markers exist only in the cloned document and carry
     // exact original Text references through Readability's rewriting and cleanup.
-    function pair(original, copy) {
+    function pair(original, copy, path) {
       if (original.nodeType === 1 && !allowed(original)) {
         copy.remove();
         return;
@@ -223,6 +215,7 @@
       if (original.nodeType === 1 && original.tagName === "BR") line++;
       if (original.nodeType === 3) {
         originalLine.set(original, line);
+        originalPath.set(original, path);
         const id = String(sequence++);
         originalOrder.set(original, Number(id));
         originalText.set(id, original);
@@ -234,9 +227,10 @@
       }
       const originals = [...original.childNodes];
       const copies = [...copy.childNodes];
-      for (let i = 0; i < originals.length; i++) pair(originals[i], copies[i]);
+      for (let i = 0; i < originals.length; i++) pair(originals[i], copies[i], path + "." + i);
     }
-    pair(doc.documentElement, clone.documentElement);
+    pair(doc.documentElement, clone.documentElement,
+      String(Array.prototype.indexOf.call(doc.childNodes, doc.documentElement)));
 
     let article = null;
     try {
@@ -305,6 +299,31 @@
       if (!blockSnapshots.has(element)) blockSnapshots.set(element, snapshot(blockNodes(element, doc, allowed)));
       return blockSnapshots.get(element);
     };
+    let validationRevision, sharedValidation;
+    function validation(revision) {
+      // A revision opts into sharing DOM/style reads across sentence checks. The
+      // controller advances it after page mutations or layout/style changes.
+      // Standalone callers omit it and always receive a fresh validation pass.
+      if (revision !== undefined && sharedValidation && validationRevision === revision) return sharedValidation;
+      const state = {
+        metadataValid: doc.title === sourceTitle && metadataDate(doc, article) === sourceDate,
+        allowed: visibilityFilter(doc), blocks: new Map(), gaps: new Map(),
+      };
+      if (revision !== undefined) {
+        validationRevision = revision;
+        sharedValidation = state;
+      }
+      return state;
+    }
+    function blockValid(element, nodes, state) {
+      if (!state.blocks.has(element)) state.blocks.set(element, element.isConnected
+        && state.allowed(element) && sameSnapshot(nodes, blockNodes(element, doc, state.allowed)));
+      return state.blocks.get(element);
+    }
+    function gapValid(gap, state) {
+      if (!state.gaps.has(gap)) state.gaps.set(gap, validGap(gap, doc, state.allowed));
+      return state.gaps.get(gap);
+    }
 
     // Each adjacent boundary is shared by the two neighboring blocks and every
     // sentence they contain. Keep one snapshot for the article-wide validator.
@@ -315,26 +334,39 @@
       return { first, last, nodes: snapshot(gapNodes(first, last, doc, allowed)) };
     });
 
+    let headingIndex = 0, heading = "", headingElement = null, headingBlock = null;
     useful.forEach((block, index) => {
-      let heading = "";
-      let headingElement = null;
-      for (const candidate of headings) {
-        if (candidate === block.element || candidate.compareDocumentPosition(block.element) & 4) {
-          heading = candidate.textContent.trim().slice(0, 500);
-          headingElement = candidate;
-        }
+      // Both lists are in original DOM order. Advance once per heading instead of
+      // comparing every heading against every paragraph in a long article.
+      // Direct text around a nested paragraph can return to its earlier ancestor.
+      if (headingBlock && headingBlock !== block.element
+          && headingBlock.compareDocumentPosition(block.element) & 2) {
+        headingIndex = 0;
+        heading = "";
+        headingElement = null;
+      }
+      headingBlock = block.element;
+      while (headingIndex < headings.length) {
+        const candidate = headings[headingIndex];
+        if (candidate !== block.element && !(candidate.compareDocumentPosition(block.element) & 4)) break;
+        heading = candidate.textContent.trim().slice(0, 500);
+        headingElement = candidate;
+        headingIndex++;
       }
       const contextElements = [...new Set([block.element, useful[index - 1]?.element,
         useful[index + 1]?.element, headingElement].filter(Boolean))];
       const contextSnapshots = contextElements.map(element => ({ element, nodes: takeBlockSnapshot(element) }));
       const gaps = [articleGaps[index - 1], articleGaps[index]].filter(Boolean);
+      let pieceIndex = 0;
       for (const item of segmenter.segment(block.text)) {
         const leading = item.segment.length - item.segment.trimStart().length;
         const text = item.segment.trim();
         if (!text) continue;
         const start = item.index + leading;
         const end = start + text.length;
-        const pieces = block.pieces.filter(piece => piece.end > start && piece.start < end);
+        while (pieceIndex < block.pieces.length && block.pieces[pieceIndex].end <= start) pieceIndex++;
+        const pieces = [];
+        for (let i = pieceIndex; i < block.pieces.length && block.pieces[i].start < end; i++) pieces.push(block.pieces[i]);
         const segments = pieces.map(piece => ({
           node: piece.node,
           start: Math.max(0, start - piece.start),
@@ -352,7 +384,7 @@
         range.setStart(segments[0].node, segments[0].start);
         const last = segments[segments.length - 1];
         range.setEnd(last.node, last.end);
-        const anchor = segments.map(segment => `${nodePath(segment.node)}:${segment.start}:${segment.end}`).join("|");
+        const anchor = segments.map(segment => `${originalPath.get(segment.node)}:${segment.start}:${segment.end}`).join("|");
         sentences.push({
           id: `wfc-${hash(anchor)}-${hash(text)}`, text, range, ranges, segments,
           block: block.element, start, end,
@@ -363,15 +395,13 @@
             next: index + 1 < useful.length ? useful[index + 1].text.slice(0, MAX_NEIGHBOR) : "",
             publication_date, language,
           },
-          isValid() {
-            if (doc.title !== sourceTitle || metadataDate(doc, article) !== sourceDate
-                || !segments.every(segment => segment.node.isConnected
-                  && segment.node.data === segment.original)) return false;
-            const currentAllowed = visibilityFilter(doc);
-            return contextSnapshots.every(item => item.element.isConnected
-              && currentAllowed(item.element)
-              && sameSnapshot(item.nodes, blockNodes(item.element, doc, currentAllowed)))
-              && gaps.every(gap => validGap(gap, doc, currentAllowed));
+          isValid(revision) {
+            if (!segments.every(segment => segment.node.isConnected
+                && segment.node.data === segment.original)) return false;
+            const state = validation(revision);
+            return state.metadataValid
+              && contextSnapshots.every(item => blockValid(item.element, item.nodes, state))
+              && gaps.every(gap => gapValid(gap, state));
           },
         });
       }
@@ -379,14 +409,13 @@
     if (!sentences.length) throw new Error("No sentences were found in this article.");
     return {
       title, language, publication_date, root, sentences,
-      isValid() {
-        if (doc.title !== sourceTitle || metadataDate(doc, article) !== sourceDate) return false;
-        const currentAllowed = visibilityFilter(doc);
+      isValid(revision) {
+        const state = validation(revision);
+        if (!state.metadataValid) return false;
         for (const [element, nodes] of blockSnapshots) {
-          if (!element.isConnected || !currentAllowed(element)
-              || !sameSnapshot(nodes, blockNodes(element, doc, currentAllowed))) return false;
+          if (!blockValid(element, nodes, state)) return false;
         }
-        return articleGaps.every(gap => validGap(gap, doc, currentAllowed));
+        return articleGaps.every(gap => gapValid(gap, state));
       },
     };
   }

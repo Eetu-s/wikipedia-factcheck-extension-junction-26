@@ -2,6 +2,8 @@ Django>=5.2,<6.0
 # Used by the wikirag package (../rag), which the Docker image puts on PYTHONPATH.
 PyMySQL>=1.1,<2
 requests>=2.31,<3
+# Directly used for thread-safe pooled Gemini requests across page-scan batches.
+urllib3>=1.26,<3
 
 gunicorn>=23,<24
 pyarrow>=15

@@ -22,7 +22,7 @@
     type, scanId: current?.id, ...extra,
   });
   const live = (current) => scan === current && !current.invalid && location.href === current.url;
-  const valid = (sentence) => sentence.isValid ? sentence.isValid() :
+  const valid = (sentence, revision) => sentence.isValid ? sentence.isValid(revision) :
     sentence.range.startContainer.isConnected && sentence.range.endContainer.isConnected;
   const ranges = (sentence) => sentence.ranges || [sentence.range];
 
@@ -33,20 +33,35 @@
       if (!scan) return;
       // Failed checks (links, captions and other text the backend can't check) are simply not
       // shown: no highlight, not counted, not listed.
-      const shown = scan.sentences.filter((s) => s.status !== "failed");
-      const groups = Object.fromEntries(names.map((name) => [name, []]));
-      for (const sentence of shown) {
-        if (scan.invalid || scan.ui.isAnimating(sentence)) continue;
-        const group = sentence.status !== "done" ? "pending" :
-          sentence.result.decision === "SUPPORTED" ? "supported" :
-            sentence.result.decision === "REFUTED" ? "refuted" : "uncertain";
-        groups[group].push(...ranges(sentence));
+      if (!scan.highlights && globalThis.CSS?.highlights && globalThis.Highlight) {
+        scan.highlights = Object.fromEntries(names.map((name) => [name, new Highlight()]));
+        for (const name of names) CSS.highlights.set("wfc-" + name, scan.highlights[name]);
       }
-      if (globalThis.CSS?.highlights && globalThis.Highlight) {
-        for (const name of names) CSS.highlights.set("wfc-" + name, new Highlight(...groups[name]));
+      const shown = [], counts = { supported: 0, refuted: 0, uncertain: 0, failed: 0 };
+      let completed = 0;
+      for (const sentence of scan.sentences) {
+        const decision = sentence.result?.decision === "SUPPORTED" ? "supported" :
+          sentence.result?.decision === "REFUTED" ? "refuted" : "uncertain";
+        if (sentence.status !== "failed") {
+          shown.push(sentence);
+          if (sentence.status === "done") { completed++; counts[decision]++; }
+        }
+        if (!scan.highlights) continue;
+        const group = scan.invalid || sentence.status === "failed" || scan.ui.isAnimating(sentence) ? null :
+          sentence.status === "done" ? decision : "pending";
+        const previous = scan.highlightGroups.get(sentence.id) || null;
+        if (previous === group) continue;
+        // Keep registered Highlight objects and move only changed ranges, instead of
+        // allocating copies of every article range after each streamed answer.
+        for (const range of ranges(sentence)) {
+          if (previous) scan.highlights[previous].delete(range);
+          if (group) scan.highlights[group].add(range);
+        }
+        if (group) scan.highlightGroups.set(sentence.id, group);
+        else scan.highlightGroups.delete(sentence.id);
       }
       scan.ui.update(shown, {
-        total: shown.length, completed: shown.filter((s) => s.status === "done").length, failed: 0,
+        total: shown.length, completed, counts, failed: 0,
         stopped: scan.stopped, changed: scan.changed, error: scan.error,
       });
     });
@@ -144,9 +159,12 @@
       if (visiblePending.length === capacity) break;
     }
     const pending = visiblePending.concat(offscreenPending).slice(0, capacity);
+    // All checks here are synchronous; share one fresh view of metadata and context
+    // blocks across the batch, without keeping validation results across DOM events.
+    const validationRevision = {};
     while (current.active < CONCURRENCY && pending.length) {
       const batch = pending.splice(0, BATCH_SIZE);
-      if (!batch.every(valid)) {
+      if (!batch.every((sentence) => valid(sentence, validationRevision))) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
         return;
       }
@@ -206,12 +224,13 @@
       response = { error: error.message };
     }
     // Whatever didn't get its own answer gets the batch's: stale, an error, or a missing result.
+    const validationRevision = {};
     for (const entry of entries) {
       if (waiting.get(entry.key) !== entry) continue;
       waiting.delete(entry.key);
       entry.current.inFlight--;
       applyFast(entry.current, entry.sentence, entry.version,
-        response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." });
+        response?.stale || response?.error ? response : { error: "The backend didn't answer this sentence." }, validationRevision);
     }
   }
 
@@ -227,10 +246,10 @@
   }
 
   // One sentence's fast answer: { result }, { error, status, retryAfter } or { stale }.
-  function applyFast(current, sentence, version, response) {
+  function applyFast(current, sentence, version, response, validationRevision) {
     try {
       if (!live(current) || current.stopped || sentence.status !== "running" || sentence.version !== version) return;
-      if (!valid(sentence)) return invalidate(current, "Article text changed. Choose Rescan.");
+      if (!valid(sentence, validationRevision)) return invalidate(current, "Article text changed. Choose Rescan.");
       if (response?.stale) return invalidate(current, "The page changed. Choose Rescan.");
       if (response?.error) {
         if (response.status === 429 && sentence.attempts++ < MAX_RETRIES) {
@@ -328,8 +347,9 @@
     const node = caret?.offsetNode || legacy?.startContainer;
     const offset = caret?.offset ?? legacy?.startOffset;
     if (!node) return null;
+    const validationRevision = {};
     for (const sentence of scan.byNode.get(node) || []) {
-      if (!valid(sentence) || sentence.status === "failed") continue;
+      if (!valid(sentence, validationRevision) || sentence.status === "failed") continue;
       if (!sentence.segments.some((segment) => segment.node === node && offset >= segment.start && offset <= segment.end)) continue;
       if (ranges(sentence).some((range) => [...range.getClientRects()].some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom))) return sentence;
     }
@@ -371,6 +391,7 @@
       id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""),
       url: location.href, article, style, active: 0, inFlight: 0, visibilityEpoch: 0,
       batches: new Set(), batchCounter: 0,
+      highlightGroups: new Map(),
       cooldown: 0, stopped: false, invalid: false, changed: false, byNode: new WeakMap(),
       sentences: article.sentences.map((s, index) => ({ ...s, index, status: "pending", attempts: 0, retryAt: 0, version: 0 })),
     };
@@ -394,7 +415,8 @@
         !m.target.closest?.("[data-wfc-ui]"));
       if (!relevant.length) return;
       current.visibilityEpoch++;
-      if (current.article.isValid ? !current.article.isValid() : current.sentences.some((s) => !valid(s))) {
+      const validationRevision = {};
+      if (current.article.isValid ? !current.article.isValid(validationRevision) : current.sentences.some((s) => !valid(s, validationRevision))) {
         invalidate(current, "Article text changed. Choose Rescan to check the current content.");
       } else if (relevant.some((m) => m.type === "childList" && [...m.addedNodes].some((node) =>
         (node.textContent || "").trim() && (m.target === current.article.root || current.article.root?.contains(m.target))))) {
