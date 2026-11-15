@@ -114,5 +114,25 @@ const fast = (context = { paragraph: "The tower is in Paris. It opened in 1889."
   assert.equal(local.password, "new-password");
   await chrome.tabs.onRemoved.listeners[0](2);
   assert.equal(session["pageScan:2"], undefined);
-  console.log("Background passed: selection compatibility, fast-only/context cache, tab isolation, authenticated deep, cancellation, 401/429.");
+  // Without a password, selections use the public endpoint (retrying a 429) and send no password.
+  delete local.password;
+  local.guest = true;
+  let publicAttempts = 0;
+  responder = (url) => url.endsWith("/explanation/e1/")
+    ? response({ status: "done", paragraphs: [] })
+    : ++publicAttempts === 1 ? response({ error: "Too many requests" }, 429, "0")
+      : response({ decision: "SUPPORTED", confidence: .8, sources: [], explanation_id: "e1" });
+  await context.checkText("Helsinki is the capital of Finland.");
+  const publicCalls = calls.filter(call => call.url.endsWith("/api/factcheck-ratelimit/"));
+  assert.equal(publicCalls.length, 2, "A 429 from the public endpoint is retried");
+  assert.equal(JSON.parse(publicCalls[1].options.body).password, undefined, "No password is sent");
+  assert.equal(session.job.status, "done");
+  assert.equal(session.job.result.decision, "SUPPORTED");
+  assert.equal(session.job.explanation.status, "done");
+  // Page scans still need the password.
+  await begin("guest");
+  const guestScan = await invoke(fast({ paragraph: "guest" }, "guest"));
+  assert.equal(guestScan.status, 401);
+  assert.match(guestScan.error, /Page scans need a password/);
+  console.log("Background passed: selection compatibility, fast-only/context cache, tab isolation, authenticated deep, cancellation, 401/429, no-password selections.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

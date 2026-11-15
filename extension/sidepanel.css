@@ -53,7 +53,7 @@ input:hover { border-color: var(--color-ink-2); background: var(--color-plate); 
 input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 input:disabled { opacity: 0.55; cursor: not-allowed; }
 
-.hint { margin: 0; font-size: var(--text-sm); color: var(--color-muted); font-weight: 400; }
+.hint, .guest-hint { margin: 0; font-size: var(--text-sm); color: var(--color-muted); font-weight: 400; }
 
 button {
   min-height: var(--control-h);

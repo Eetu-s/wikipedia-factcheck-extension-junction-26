@@ -24,10 +24,13 @@
         <input id="password" name="password" type="password" autocomplete="current-password" required>
       </label>
       <div><button type="submit">Log in</button></div>
+      <p class="guest-hint">No password? Selection checks still work through the public service, which is shared and slower. Page scans need a password.</p>
+      <div><button id="guest" type="button" class="quiet">Continue without password</button></div>
     </form>
 
-    <!-- Shown once logged in. -->
+    <!-- Shown once logged in, or after "Continue without password". -->
     <div id="main" class="stack" hidden>
+      <p id="guestNotice" class="guest-hint" hidden>No password: selection checks only, through the shared public service. Log in for page scans.</p>
       <div id="result" class="stack" aria-live="polite"></div>
       <div class="footer"><button id="logout" type="button" class="quiet">Log out</button></div>
     </div>

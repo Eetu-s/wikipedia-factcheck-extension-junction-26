@@ -75,8 +75,42 @@ async function backendBase() {
   return base;
 }
 
+// With a saved password, selections use the password endpoint. Without one ("Continue without
+// password" in the side panel), they use the public endpoint, which accepts one request per
+// second across all clients, so a 429 means waiting and trying again.
 async function callBackend(text) {
-  return authenticatedRequest("/api/factcheck/", { text });
+  const { password } = await chrome.storage.local.get("password");
+  if (password) return authenticatedRequest("/api/factcheck/", { text });
+  return publicRequest("/api/factcheck-ratelimit/", { text });
+}
+
+const PUBLIC_ATTEMPTS = 4;
+
+async function publicRequest(path, body) {
+  const url = (await backendBase()) + path;
+  for (let attempt = 1; ; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      throw new Error("Can't reach the backend at " + url);
+    }
+    if (response.status === 429 && attempt < PUBLIC_ATTEMPTS) {
+      const wait = Number(response.headers.get("Retry-After")) || 1;
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000 + Math.random() * 500));
+      continue;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 429) {
+      throw new Error("The public service is busy. Try again in a moment, or log in with a password.");
+    }
+    if (!response.ok) throw new Error(data.error || "Backend error (HTTP " + response.status + ")");
+    return data;
+  }
 }
 
 // With raw = true, a successful response is returned unread (for streaming); errors are handled
@@ -176,7 +210,7 @@ async function pageMessage(message, sender) {
     return {};
   }
   const { backendUrl, password } = await chrome.storage.local.get(["backendUrl", "password"]);
-  if (!password) return { error: "Log in using the extension's toolbar side panel, then choose Rescan.", status: 401 };
+  if (!password) return { error: "Page scans need a password. Log in using the extension's toolbar side panel, then choose Rescan. Without a password, use Fact-check selection.", status: 401 };
   if (message.type === "WFC_FAST_BATCH") return pageBatch(message, sender, tabId, scanKey, backendUrl);
   const isFast = message.type === "WFC_FAST";
   if (!isFast && !["WFC_DEEP_START", "WFC_DEEP_POLL"].includes(message.type)) throw new Error("Unknown page request.");

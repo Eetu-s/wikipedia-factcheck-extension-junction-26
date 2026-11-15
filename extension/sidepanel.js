@@ -1,4 +1,6 @@
-// Side panel: a login form until a password is saved, then the latest check result.
+// Side panel: a login form until a password is saved (or the user continues without one),
+// then the latest check result. Without a password, selection checks use the public,
+// rate-limited endpoint and page scans are unavailable.
 //
 // The password is kept in chrome.storage.local: private to this extension (web pages can't
 // read it, unlike cookies or localStorage) and kept across browser restarts.
@@ -15,15 +17,20 @@ const DEFAULT_BACKEND_URL = "https://klausde.tech";
 // --- Login / logout ---
 
 async function showLoginOrMain() {
-  const { backendUrl, password } = await chrome.storage.local.get(["backendUrl", "password"]);
+  const { backendUrl, password, guest } = await chrome.storage.local.get(["backendUrl", "password", "guest"]);
   const loggedIn = Boolean(password);
-  loginForm.hidden = loggedIn;
-  mainEl.hidden = !loggedIn;
+  const inside = loggedIn || Boolean(guest);
+  loginForm.hidden = inside;
+  mainEl.hidden = !inside;
+  guestNotice.hidden = loggedIn;
+  logoutButton.textContent = loggedIn ? "Log out" : "Log in with a password";
   backendUrlInput.value = backendUrl || "";
   passwordInput.value = ""; // never put the saved password back into the page
 }
 
 const loginError = document.getElementById("loginError");
+const guestNotice = document.getElementById("guestNotice");
+const logoutButton = document.getElementById("logout");
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -56,11 +63,19 @@ loginForm.addEventListener("submit", async (event) => {
     passwordInput.value = "";
     return;
   }
-  await chrome.storage.local.set({ backendUrl, password });
+  await chrome.storage.local.set({ backendUrl, password, guest: false });
 });
 
-document.getElementById("logout").addEventListener("click", () => {
-  chrome.storage.local.remove("password");
+// Without a password: keep the backend URL, skip the password check.
+document.getElementById("guest").addEventListener("click", async () => {
+  await chrome.storage.session.remove("job");
+  loginError.textContent = "";
+  await chrome.storage.local.set({ backendUrl: backendUrlInput.value.trim(), guest: true });
+  await chrome.storage.local.remove("password");
+});
+
+logoutButton.addEventListener("click", () => {
+  chrome.storage.local.remove(["password", "guest"]);
 });
 
 // --- Result ---
@@ -384,6 +399,6 @@ showLoginOrMain();
 chrome.storage.session.get("job").then(({ job }) => showJob(job));
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.password) showLoginOrMain();
+  if (area === "local" && (changes.password || changes.guest)) showLoginOrMain();
   if (area === "session" && changes.job) showJob(changes.job.newValue);
 });

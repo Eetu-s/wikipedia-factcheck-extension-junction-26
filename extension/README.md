@@ -69,7 +69,7 @@ unpacked extension after updating its files. Docker startup also applies migrati
 ## Files
 
 - `manifest.json`: extension config and permissions.
-- `background.js`: adds the right-click menu items and sends the requests: `POST /api/factcheck/` for selections, `POST /api/factcheck/batch/` for page scans.
+- `background.js`: adds the right-click menu items and sends the requests: `POST /api/factcheck/` for selections (`POST /api/factcheck-ratelimit/` without a password), `POST /api/factcheck/batch/` for page scans.
 - `vendor/Readability.js`: bundled Mozilla article extractor (see `vendor/README.md` for license).
 - `article.js`: article provenance, locale-aware sentences, original ranges, and snapshot validation.
 - `page-scan.js`: page queue, highlighting, cancellation, Rescan, and click-only deep analysis.
@@ -81,7 +81,7 @@ unpacked extension after updating its files. Docker startup also applies migrati
 
 1. Open `chrome://extensions` and turn on **Developer mode**.
 2. Click **Load unpacked** and choose this `extension/` folder.
-3. Click the extension's toolbar icon to open the side panel. Enter the backend URL (default `https://klausde.tech`, or `http://localhost:8000` for local development) and the password, then click **Log in**.
+3. Click the extension's toolbar icon to open the side panel. Enter the backend URL (default `https://klausde.tech`, or `http://localhost:8000` for local development) and the password, then click **Log in**. Without a password, click **Continue without password** to use selection checks only (see [Without a password](#without-a-password)).
 4. Select some text, right-click it and choose **Fact-check selection**.
 5. Or right-click an article and choose **Fact-check this page**. Hover a highlight for its
    fast result; click it for deeper analysis.
@@ -98,6 +98,22 @@ hash of the password (`FACTCHECK_PASSWORD_HASH`, see `backend/.env.example`).
 You enter the password once. It is saved in `chrome.storage.local`, which only this extension can read (web pages can't, unlike cookies or `localStorage`). It stays saved after a browser restart until you click **Log out**, or until the backend answers 401, which deletes it and shows the login form again.
 
 The extension refuses to send the password to an `http://` URL unless the host is `localhost` or `127.0.0.1`, so the deployed backend must use **https://**.
+
+## Without a password
+
+**Continue without password** in the side panel saves the backend URL and a `guest` flag
+instead of a password. **Fact-check selection** then calls the public
+`POST /api/factcheck-ratelimit/` with `{"text": "..."}`, the same endpoint as the website. It
+returns the same verdict, sources and explanation as the password endpoint, but the backend
+accepts at most one request per second across all clients (the production proxy also rate
+limits it). On HTTP 429 the extension waits for `Retry-After` and tries up to 4 times before
+showing an error. Explanations come from `GET /api/factcheck/explanation/<id>/`, which needs
+no password for selection checks.
+
+Page scans still need the password: they send many sentences at once, which the shared
+one-per-second limit can't serve, and their deep-analysis routes are password-only. Without
+a password, **Fact-check this page** shows a message asking you to log in. **Log in with a
+password** at the bottom of the panel returns to the login form.
 
 ## Page API
 

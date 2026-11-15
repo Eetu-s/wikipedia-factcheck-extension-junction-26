@@ -31,7 +31,7 @@ NOT ENOUGH INFO rather than a guess. Results further than cosine distance 0.5 ar
 |---|---|
 | `POST /api/factcheck/` | extension selection checks (password) |
 | `POST /api/factcheck/batch/` | extension page scans, streamed (password) |
-| `POST /api/factcheck-ratelimit/` | website, no password, one request per second overall |
+| `POST /api/factcheck-ratelimit/` | website and extension selection checks without a password, one request per second overall |
 | `GET /accuracy` | accuracy report (below) |
 
 ## Accuracy report
